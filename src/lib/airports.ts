@@ -1,0 +1,16 @@
+export const AIRPORTS = [
+  { code: "BLR", name: "Bengaluru" },
+  { code: "IXZ", name: "Port Blair" },
+  { code: "DEL", name: "Delhi" },
+  { code: "BOM", name: "Mumbai" },
+  { code: "MAA", name: "Chennai" },
+  { code: "HYD", name: "Hyderabad" },
+  { code: "CCU", name: "Kolkata" },
+  { code: "COK", name: "Kochi" },
+  { code: "GOI", name: "Goa" },
+  { code: "PNQ", name: "Pune" },
+  { code: "AMD", name: "Ahmedabad" },
+  { code: "JAI", name: "Jaipur" },
+  { code: "IXL", name: "Leh" },
+  { code: "SXR", name: "Srinagar" },
+] as const;
