@@ -66,6 +66,46 @@ export const MIGRATIONS: readonly Migration[] = [
       )`,
     ],
   },
+  {
+    id: 3,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS plans (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id),
+        origin TEXT NOT NULL,
+        destination TEXT NOT NULL,
+        month TEXT NOT NULL,
+        trip TEXT NOT NULL CHECK (trip IN ('round','oneway')),
+        min_gap INTEGER NOT NULL,
+        max_gap INTEGER NOT NULL,
+        alert_enabled INTEGER NOT NULL DEFAULT 0,
+        target_price INTEGER,
+        last_alert_price INTEGER,
+        last_alert_at TEXT,
+        created_at TEXT NOT NULL,
+        UNIQUE(user_id, origin, destination, month, trip, min_gap, max_gap)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_plans_user_id ON plans(user_id)`,
+      `CREATE TABLE IF NOT EXISTS recent_searches (
+        user_id TEXT NOT NULL REFERENCES users(id),
+        origin TEXT NOT NULL,
+        destination TEXT NOT NULL,
+        month TEXT NOT NULL,
+        trip TEXT NOT NULL CHECK (trip IN ('round','oneway')),
+        min_gap INTEGER NOT NULL,
+        max_gap INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(user_id, origin, destination, month, trip, min_gap, max_gap)
+      )`,
+      `CREATE TABLE IF NOT EXISTS alert_deliveries (
+        plan_id TEXT NOT NULL REFERENCES plans(id),
+        day TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('claimed','sent','failed')),
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(plan_id, day)
+      )`,
+    ],
+  },
 ];
 
 const SQLITE_BUSY_RE = /SQLITE_BUSY|database is locked/i;

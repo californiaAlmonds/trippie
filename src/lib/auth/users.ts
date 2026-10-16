@@ -182,13 +182,24 @@ export async function resetUserPassword(userId: string, newPasswordHash: string)
 
 /**
  * Deletes the user's child rows and user record in ONE write transaction in explicit dependency order:
- * email_tokens -> sessions -> users.
+ * alert_deliveries -> plans -> recent_searches -> email_tokens -> sessions -> users.
  */
 export async function deleteUserAccount(userId: string): Promise<void> {
   const client = await getClient();
   await client.batch(
     [
-      // TODO(plans/recents): Delete user's saved plans, price alerts, and recent searches here before deleting users row.
+      {
+        sql: "DELETE FROM alert_deliveries WHERE plan_id IN (SELECT id FROM plans WHERE user_id = ?)",
+        args: [userId],
+      },
+      {
+        sql: "DELETE FROM plans WHERE user_id = ?",
+        args: [userId],
+      },
+      {
+        sql: "DELETE FROM recent_searches WHERE user_id = ?",
+        args: [userId],
+      },
       {
         sql: "DELETE FROM email_tokens WHERE user_id = ?",
         args: [userId],
