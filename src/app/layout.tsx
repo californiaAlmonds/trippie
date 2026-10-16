@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
@@ -13,8 +13,17 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Trippie - cheapest flight windows",
-  description: "Pick a month and trip length; find the cheapest round-trip dates for Indian routes.",
+  title: "Trippie — Cheapest Flight Windows",
+  description:
+    "Pick a month and trip length; find the cheapest round-trip dates or one-way fares across Indian routes.",
+};
+
+export const viewport: Viewport = {
+  colorScheme: "light dark",
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#eaf1fc" },
+    { media: "(prefers-color-scheme: dark)", color: "#070b16" },
+  ],
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
@@ -23,7 +32,10 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="min-h-full flex flex-col relative selection:bg-sky-500/20">
+        <div className="bg-mesh" aria-hidden="true" />
+        {children}
+      </body>
     </html>
   );
 }
