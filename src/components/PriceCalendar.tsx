@@ -49,10 +49,10 @@ export default function PriceCalendar({ trip, calendar }: PriceCalendarProps) {
           <span>cheaper</span>
           <span
             aria-hidden="true"
-            className="h-2 w-16 rounded-full border border-black/5 dark:border-white/10"
+            className="h-2 w-16 rounded-full ring-1 ring-inset ring-[var(--heat-ring)]"
             style={{
               background:
-                "linear-gradient(90deg, hsl(135 var(--heat-sat) var(--heat-light)), hsl(65 var(--heat-sat) var(--heat-light)), hsl(5 var(--heat-sat) var(--heat-light)))",
+                "linear-gradient(90deg, hsl(150 var(--heat-sat) var(--heat-light)), hsl(85 var(--heat-sat) var(--heat-light-mid)), hsl(20 var(--heat-sat) var(--heat-light-warm)))",
             }}
           />
           <span>pricier</span>
@@ -79,7 +79,7 @@ export default function PriceCalendar({ trip, calendar }: PriceCalendarProps) {
             return (
               <div
                 key={date}
-                className="flex flex-col items-center justify-center rounded-xl border border-transparent py-2 px-1 text-center text-xs text-[var(--text-muted)] opacity-55"
+                className="flex flex-col items-center justify-center rounded-xl ring-1 ring-inset ring-[var(--glass-border-subtle)] py-2 px-1 text-center text-xs text-[var(--text-muted)] opacity-60"
                 style={{ backgroundColor: "var(--heat-empty-bg)" }}
               >
                 <span className="font-medium tabular-nums">{date.slice(8)}</span>
@@ -88,9 +88,10 @@ export default function PriceCalendar({ trip, calendar }: PriceCalendarProps) {
             );
           }
 
-          // Colour by how far above the cheapest day (0% green to 25%+ red).
+          // Colour by how far above the cheapest day (0% green hue 150 to 25%+ warm hue 20).
           const t = min > 0 ? Math.min(1, (c.total - min) / (min * 0.25)) : 0;
-          const hue = Math.round(135 - 130 * t);
+          const hue = Math.round(150 - 130 * t);
+          const weight = Math.round(t * 100);
 
           return (
             <div
@@ -98,9 +99,9 @@ export default function PriceCalendar({ trip, calendar }: PriceCalendarProps) {
               title={`${fmtDate(c.date)}: ${inr.format(c.total)}${
                 c.gap ? ` (${c.gap} days)` : ""
               }`}
-              className="flex flex-col items-center justify-center rounded-xl border border-white/40 dark:border-white/10 py-2 px-1 text-center text-xs shadow-xs transition-transform hover:scale-[1.03]"
+              className="flex flex-col items-center justify-center rounded-xl ring-1 ring-inset ring-[var(--heat-ring)] py-2 px-1 text-center text-xs shadow-2xs transition-transform hover:scale-[1.03]"
               style={{
-                backgroundColor: `hsl(${hue} var(--heat-sat) var(--heat-light))`,
+                backgroundColor: `color-mix(in hsl, hsl(${hue} var(--heat-sat) var(--heat-light)), hsl(${hue} var(--heat-sat) var(--heat-light-warm)) ${weight}%)`,
                 color: "var(--heat-text)",
               }}
             >

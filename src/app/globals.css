@@ -4,16 +4,16 @@
   color-scheme: light dark;
 
   /* Core palette - Light mode (pale sky-blue/violet/teal/peach mesh base) */
-  --bg-base: #eef3fb;
+  --bg-base: #eaf1fc;
   --text-primary: #0f172a;
-  --text-secondary: #334155;
-  --text-muted: #52627a;
+  --text-secondary: #1e293b;
+  --text-muted: #475569;
 
   /* Apple system blue & accents */
   --accent: #0a84ff;
   --accent-hover: #0066d6;
-  --accent-soft: rgba(10, 132, 255, 0.14);
-  --accent-border: rgba(10, 132, 255, 0.55);
+  --accent-soft: rgba(10, 132, 255, 0.16);
+  --accent-border: rgba(10, 132, 255, 0.65);
 
   /* Best / delta chips */
   --badge-lowest-bg: rgba(16, 185, 129, 0.16);
@@ -32,56 +32,66 @@
   --delta-red-text: #991b1b;
   --delta-red-border: rgba(239, 68, 68, 0.32);
 
-  /* Glass surface tokens (white/55 light, white/50 border) */
-  --glass-bg: rgba(255, 255, 255, 0.55);
-  --glass-bg-strong: rgba(255, 255, 255, 0.74);
-  --glass-bg-subtle: rgba(255, 255, 255, 0.48);
-  --glass-bg-subtle-hover: rgba(255, 255, 255, 0.72);
-  --glass-bg-selected: rgba(255, 255, 255, 0.86);
-  --glass-field-bg: rgba(255, 255, 255, 0.62);
-  --glass-field-hover: rgba(255, 255, 255, 0.82);
+  /* Glass surface tokens (white ~40-50% alpha panels, ~25-35% alpha rows, white/60-70% border) */
+  --glass-bg: rgba(255, 255, 255, 0.42);
+  --glass-bg-strong: rgba(255, 255, 255, 0.48);
+  --glass-bg-subtle: rgba(255, 255, 255, 0.28);
+  --glass-bg-subtle-hover: rgba(255, 255, 255, 0.44);
+  --glass-bg-selected: rgba(255, 255, 255, 0.72);
+  --glass-field-bg: rgba(255, 255, 255, 0.38);
+  --glass-field-hover: rgba(255, 255, 255, 0.56);
 
-  --glass-border: rgba(255, 255, 255, 0.5);
-  --glass-border-subtle: rgba(15, 23, 42, 0.09);
-  --glass-highlight: inset 0 1px 0 0 rgba(255, 255, 255, 0.78);
+  --glass-border: rgba(255, 255, 255, 0.65);
+  --glass-border-subtle: rgba(255, 255, 255, 0.55);
+  --glass-highlight: inset 0 1px 0 0 rgba(255, 255, 255, 0.72);
+  --glass-inner-glow: inset 0 0 24px 0 rgba(255, 255, 255, 0.22);
+  --glass-row-highlight: inset 0 1px 0 0 rgba(255, 255, 255, 0.65);
   --glass-shadow:
-    0 18px 42px -12px rgba(15, 23, 42, 0.08),
-    0 4px 14px -2px rgba(15, 23, 42, 0.05);
+    0 20px 50px -20px rgba(31, 41, 100, 0.25),
+    0 4px 16px -4px rgba(31, 41, 100, 0.08);
   --glass-shadow-sm:
-    0 6px 18px -6px rgba(15, 23, 42, 0.07),
-    0 2px 6px -1px rgba(15, 23, 42, 0.04);
+    0 6px 18px -8px rgba(31, 41, 100, 0.12),
+    0 1px 3px 0 rgba(15, 23, 42, 0.04);
 
   /* Blue glass hero card */
   --blue-glass-bg: linear-gradient(
     135deg,
-    rgba(10, 132, 255, 0.92) 0%,
-    rgba(0, 102, 214, 0.94) 100%
+    rgba(10, 132, 255, 0.88) 0%,
+    rgba(0, 102, 214, 0.92) 100%
   );
-  --blue-glass-border: rgba(255, 255, 255, 0.36);
+  --blue-glass-border: rgba(255, 255, 255, 0.42);
   --blue-glass-shadow:
-    inset 0 1px 0 0 rgba(255, 255, 255, 0.42),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.45),
     0 16px 34px -10px rgba(0, 102, 214, 0.42);
 
   /* Tinted banners */
-  --amber-glass-bg: rgba(254, 243, 199, 0.72);
+  --amber-glass-bg: rgba(254, 243, 199, 0.62);
   --amber-glass-border: rgba(217, 119, 6, 0.35);
   --amber-glass-text: #78350f;
 
-  --danger-glass-bg: rgba(254, 226, 226, 0.76);
+  --danger-glass-bg: rgba(254, 226, 226, 0.66);
   --danger-glass-border: rgba(220, 38, 38, 0.35);
   --danger-glass-text: #7f1d1d;
 
   /* Calendar cell lightness/saturation */
   --heat-sat: 68%;
   --heat-light: 83%;
+  --heat-light-mid: 85%;
+  --heat-light-warm: 84%;
   --heat-text: #0f172a;
-  --heat-empty-bg: rgba(255, 255, 255, 0.38);
+  --heat-ring: rgba(255, 255, 255, 0.65);
+  --heat-empty-bg: rgba(255, 255, 255, 0.26);
 
-  /* Background mesh gradients: sky-blue, violet, teal, peach */
-  --mesh-sky: rgba(125, 211, 252, 0.55);
-  --mesh-violet: rgba(167, 139, 250, 0.45);
-  --mesh-teal: rgba(153, 246, 228, 0.45);
-  --mesh-peach: rgba(253, 186, 116, 0.36);
+  /* Background mesh gradients: vivid sky-blue, violet, teal, peach */
+  --mesh-sky: rgba(56, 189, 248, 0.72);
+  --mesh-violet: rgba(139, 92, 246, 0.62);
+  --mesh-teal: rgba(45, 212, 191, 0.58);
+  --mesh-peach: rgba(251, 146, 60, 0.52);
+
+  /* Ambient blurred orbs behind content */
+  --orb-1: rgba(56, 189, 248, 0.55);
+  --orb-2: rgba(168, 85, 247, 0.48);
+  --orb-3: rgba(45, 212, 191, 0.46);
 
   /* Hero gradient text */
   --hero-gradient: linear-gradient(135deg, #0f172a 0%, #1e3a8a 55%, #0284c7 100%);
@@ -97,8 +107,8 @@
 
     --accent: #0a84ff;
     --accent-hover: #0066d6;
-    --accent-soft: rgba(10, 132, 255, 0.2);
-    --accent-border: rgba(10, 132, 255, 0.7);
+    --accent-soft: rgba(10, 132, 255, 0.22);
+    --accent-border: rgba(10, 132, 255, 0.72);
 
     --badge-lowest-bg: rgba(16, 185, 129, 0.2);
     --badge-lowest-text: #6ee7b7;
@@ -116,24 +126,28 @@
     --delta-red-text: #fca5a5;
     --delta-red-border: rgba(248, 113, 113, 0.35);
 
-    /* Glass surface tokens (white/8 dark, white/12 border) */
-    --glass-bg: rgba(255, 255, 255, 0.08);
-    --glass-bg-strong: rgba(255, 255, 255, 0.115);
-    --glass-bg-subtle: rgba(255, 255, 255, 0.055);
-    --glass-bg-subtle-hover: rgba(255, 255, 255, 0.095);
-    --glass-bg-selected: rgba(10, 132, 255, 0.18);
+    /* Glass surface tokens (top-lit 1px border + soft inner glow) */
+    --glass-bg: rgba(18, 26, 48, 0.52);
+    --glass-bg-strong: rgba(22, 32, 58, 0.62);
+    --glass-bg-subtle: rgba(255, 255, 255, 0.045);
+    --glass-bg-subtle-hover: rgba(255, 255, 255, 0.085);
+    --glass-bg-selected: rgba(10, 132, 255, 0.2);
     --glass-field-bg: rgba(15, 23, 42, 0.56);
     --glass-field-hover: rgba(15, 23, 42, 0.74);
 
-    --glass-border: rgba(255, 255, 255, 0.12);
-    --glass-border-subtle: rgba(255, 255, 255, 0.09);
-    --glass-highlight: inset 0 1px 0 0 rgba(255, 255, 255, 0.16);
+    --glass-border: rgba(255, 255, 255, 0.14);
+    --glass-border-subtle: rgba(255, 255, 255, 0.1);
+    --glass-highlight: inset 0 1px 0 0 rgba(255, 255, 255, 0.14);
+    --glass-inner-glow:
+      inset 0 12px 28px -12px rgba(255, 255, 255, 0.07),
+      inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+    --glass-row-highlight: inset 0 1px 0 0 rgba(255, 255, 255, 0.1);
     --glass-shadow:
-      0 22px 48px -12px rgba(0, 0, 0, 0.55),
-      0 6px 16px -4px rgba(0, 0, 0, 0.35);
+      0 22px 50px -14px rgba(0, 0, 0, 0.65),
+      0 6px 18px -4px rgba(0, 0, 0, 0.42);
     --glass-shadow-sm:
-      0 8px 20px -6px rgba(0, 0, 0, 0.4),
-      0 2px 6px -1px rgba(0, 0, 0, 0.25);
+      0 8px 20px -6px rgba(0, 0, 0, 0.38),
+      0 2px 6px -1px rgba(0, 0, 0, 0.24);
 
     --blue-glass-bg: linear-gradient(
       135deg,
@@ -153,15 +167,23 @@
     --danger-glass-border: rgba(248, 113, 113, 0.4);
     --danger-glass-text: #fecaca;
 
-    --heat-sat: 54%;
-    --heat-light: 27%;
+    /* Softer dark-mode heat tiles (~45% sat, ~28-34% lightness, light text) */
+    --heat-sat: 45%;
+    --heat-light: 28%;
+    --heat-light-mid: 31%;
+    --heat-light-warm: 34%;
     --heat-text: #f1f5f9;
-    --heat-empty-bg: rgba(255, 255, 255, 0.045);
+    --heat-ring: rgba(255, 255, 255, 0.14);
+    --heat-empty-bg: rgba(255, 255, 255, 0.04);
 
-    --mesh-sky: rgba(14, 116, 144, 0.28);
-    --mesh-violet: rgba(79, 70, 229, 0.26);
-    --mesh-teal: rgba(15, 118, 110, 0.22);
-    --mesh-peach: rgba(194, 65, 12, 0.14);
+    --mesh-sky: rgba(14, 165, 233, 0.32);
+    --mesh-violet: rgba(99, 102, 241, 0.3);
+    --mesh-teal: rgba(20, 184, 166, 0.26);
+    --mesh-peach: rgba(234, 88, 12, 0.18);
+
+    --orb-1: rgba(14, 165, 233, 0.24);
+    --orb-2: rgba(124, 58, 237, 0.22);
+    --orb-3: rgba(20, 184, 166, 0.2);
 
     --hero-gradient: linear-gradient(135deg, #ffffff 0%, #bae6fd 55%, #60a5fa 100%);
   }
@@ -190,10 +212,10 @@ body {
 
 body {
   background-image:
-    radial-gradient(circle at 12% 16%, var(--mesh-sky) 0%, transparent 48%),
-    radial-gradient(circle at 86% 12%, var(--mesh-violet) 0%, transparent 52%),
-    radial-gradient(circle at 75% 78%, var(--mesh-teal) 0%, transparent 52%),
-    radial-gradient(circle at 22% 84%, var(--mesh-peach) 0%, transparent 46%);
+    radial-gradient(ellipse 68% 58% at 12% 16%, var(--mesh-sky) 0%, transparent 62%),
+    radial-gradient(ellipse 64% 56% at 86% 14%, var(--mesh-violet) 0%, transparent 62%),
+    radial-gradient(ellipse 66% 58% at 76% 78%, var(--mesh-teal) 0%, transparent 62%),
+    radial-gradient(ellipse 60% 52% at 20% 84%, var(--mesh-peach) 0%, transparent 58%);
   background-attachment: fixed;
 }
 
@@ -203,52 +225,90 @@ h3 {
   letter-spacing: -0.025em;
 }
 
-/* Soft calm Apple visionOS / Weather background mesh layer */
+/* Soft calm Apple visionOS / Weather background mesh layer + ambient blurred orbs */
 .bg-mesh {
   position: fixed;
   inset: 0;
   z-index: -1;
   pointer-events: none;
+  overflow: hidden;
   background-color: var(--bg-base);
   background-image:
-    radial-gradient(circle at 12% 16%, var(--mesh-sky) 0%, transparent 48%),
-    radial-gradient(circle at 86% 12%, var(--mesh-violet) 0%, transparent 52%),
-    radial-gradient(circle at 75% 78%, var(--mesh-teal) 0%, transparent 52%),
-    radial-gradient(circle at 22% 84%, var(--mesh-peach) 0%, transparent 46%);
+    radial-gradient(ellipse 68% 58% at 12% 16%, var(--mesh-sky) 0%, transparent 62%),
+    radial-gradient(ellipse 64% 56% at 86% 14%, var(--mesh-violet) 0%, transparent 62%),
+    radial-gradient(ellipse 66% 58% at 76% 78%, var(--mesh-teal) 0%, transparent 62%),
+    radial-gradient(ellipse 60% 52% at 20% 84%, var(--mesh-peach) 0%, transparent 58%);
+}
+
+.bg-mesh::before,
+.bg-mesh::after {
+  content: "";
+  position: fixed;
+  pointer-events: none;
+  border-radius: 9999px;
+  filter: blur(72px);
+  z-index: -1;
+}
+
+.bg-mesh::before {
+  top: 4%;
+  left: 8%;
+  width: min(56vw, 560px);
+  height: min(56vw, 560px);
+  background: radial-gradient(
+    circle at 35% 35%,
+    var(--orb-1) 0%,
+    var(--orb-2) 55%,
+    transparent 76%
+  );
+  box-shadow: 38vw 26vh 90px 24px var(--orb-2);
+}
+
+.bg-mesh::after {
+  bottom: 4%;
+  right: 10%;
+  width: min(52vw, 520px);
+  height: min(52vw, 520px);
+  background: radial-gradient(
+    circle at 50% 50%,
+    var(--orb-3) 0%,
+    var(--mesh-peach) 58%,
+    transparent 76%
+  );
 }
 
 @layer components {
   /* Primary frosted glass surface */
   .glass {
     background: var(--glass-bg);
-    backdrop-filter: blur(24px) saturate(150%);
-    -webkit-backdrop-filter: blur(24px) saturate(150%);
+    backdrop-filter: blur(26px) saturate(170%);
+    -webkit-backdrop-filter: blur(26px) saturate(170%);
     border: 1px solid var(--glass-border);
     border-radius: 1.5rem;
-    box-shadow: var(--glass-highlight), var(--glass-shadow);
+    box-shadow: var(--glass-highlight), var(--glass-inner-glow), var(--glass-shadow);
   }
 
   /* Main search card & elevated panels */
   .glass-strong {
     background: var(--glass-bg-strong);
-    backdrop-filter: blur(28px) saturate(160%);
-    -webkit-backdrop-filter: blur(28px) saturate(160%);
+    backdrop-filter: blur(30px) saturate(180%);
+    -webkit-backdrop-filter: blur(30px) saturate(180%);
     border: 1px solid var(--glass-border);
     border-radius: 1.5rem;
-    box-shadow: var(--glass-highlight), var(--glass-shadow);
+    box-shadow: var(--glass-highlight), var(--glass-inner-glow), var(--glass-shadow);
   }
 
-  /* List rows, chips, and inputs */
+  /* List rows, chips, and inner items (lighter & more transparent than panels) */
   .glass-subtle {
     background: var(--glass-bg-subtle);
     border: 1px solid var(--glass-border-subtle);
-    box-shadow: var(--glass-highlight), var(--glass-shadow-sm);
+    box-shadow: var(--glass-row-highlight), var(--glass-shadow-sm);
   }
 
   .glass-subtle-interactive {
     background: var(--glass-bg-subtle);
     border: 1px solid var(--glass-border-subtle);
-    box-shadow: var(--glass-highlight), var(--glass-shadow-sm);
+    box-shadow: var(--glass-row-highlight), var(--glass-shadow-sm);
     transition:
       transform 180ms cubic-bezier(0.22, 1, 0.36, 1),
       background-color 180ms ease,
@@ -258,6 +318,7 @@ h3 {
 
   .glass-subtle-interactive:hover {
     background: var(--glass-bg-subtle-hover);
+    border-color: var(--glass-border);
     transform: translateY(-1.5px);
   }
 
@@ -265,7 +326,7 @@ h3 {
     background: var(--glass-bg-selected);
     border: 1.5px solid var(--accent-border);
     box-shadow:
-      var(--glass-highlight),
+      var(--glass-row-highlight),
       0 0 0 3px var(--accent-soft),
       var(--glass-shadow-sm);
     transition:
@@ -278,8 +339,8 @@ h3 {
   /* Blue glass hero booking card */
   .glass-blue {
     background: var(--blue-glass-bg);
-    backdrop-filter: blur(20px) saturate(150%);
-    -webkit-backdrop-filter: blur(20px) saturate(150%);
+    backdrop-filter: blur(20px) saturate(160%);
+    -webkit-backdrop-filter: blur(20px) saturate(160%);
     border: 1px solid var(--blue-glass-border);
     box-shadow: var(--blue-glass-shadow);
     color: #ffffff;
@@ -297,8 +358,8 @@ h3 {
   /* Form controls (glass pills with 44px min touch height) */
   .glass-field {
     background: var(--glass-field-bg);
-    border: 1px solid var(--glass-border-subtle);
-    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.03), var(--glass-highlight);
+    border: 1px solid var(--glass-border);
+    box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.04), var(--glass-row-highlight);
     color: var(--text-primary);
     transition:
       background-color 150ms ease,
@@ -341,8 +402,8 @@ h3 {
   /* Tinted status glass */
   .glass-amber {
     background: var(--amber-glass-bg);
-    backdrop-filter: blur(18px) saturate(140%);
-    -webkit-backdrop-filter: blur(18px) saturate(140%);
+    backdrop-filter: blur(22px) saturate(160%);
+    -webkit-backdrop-filter: blur(22px) saturate(160%);
     border: 1px solid var(--amber-glass-border);
     color: var(--amber-glass-text);
     box-shadow: var(--glass-highlight);
@@ -350,8 +411,8 @@ h3 {
 
   .glass-danger {
     background: var(--danger-glass-bg);
-    backdrop-filter: blur(18px) saturate(140%);
-    -webkit-backdrop-filter: blur(18px) saturate(140%);
+    backdrop-filter: blur(22px) saturate(160%);
+    -webkit-backdrop-filter: blur(22px) saturate(160%);
     border: 1px solid var(--danger-glass-border);
     color: var(--danger-glass-text);
     box-shadow: var(--glass-highlight);

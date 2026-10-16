@@ -64,8 +64,8 @@ export default function SearchForm({
         </div>
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:flex lg:flex-wrap lg:items-end">
-          <div className="grid grid-cols-[1fr_auto_1fr] items-end gap-2 sm:col-span-2 lg:flex-1 lg:min-w-[320px]">
-            <label className="grid gap-1.5 text-xs font-medium text-[var(--text-secondary)]">
+          <div className="grid grid-cols-1 gap-2 sm:col-span-2 sm:grid-cols-[1fr_auto_1fr] sm:items-end lg:flex-1 lg:min-w-[320px]">
+            <label className="grid w-full min-w-0 gap-1.5 text-xs font-medium text-[var(--text-secondary)]">
               <span className="tracking-wide">From</span>
               <select
                 className={pillInputClass}
@@ -85,12 +85,12 @@ export default function SearchForm({
               onClick={onSwapAirports}
               aria-label="Swap origin and destination"
               title="Swap origin and destination"
-              className="glass-field focus-ring inline-flex h-[44px] w-[44px] shrink-0 items-center justify-center rounded-2xl text-[var(--text-secondary)] hover:text-[var(--text-primary)] active:scale-95 transition-transform cursor-pointer"
+              className="glass-field focus-ring inline-flex min-h-[44px] h-[44px] w-[44px] shrink-0 items-center justify-center justify-self-center rounded-2xl text-[var(--text-secondary)] hover:text-[var(--text-primary)] active:scale-95 transition-transform cursor-pointer"
             >
-              <SwapIcon className="h-4 w-4" />
+              <SwapIcon className="h-4 w-4 rotate-90 sm:rotate-0" />
             </button>
 
-            <label className="grid gap-1.5 text-xs font-medium text-[var(--text-secondary)]">
+            <label className="grid w-full min-w-0 gap-1.5 text-xs font-medium text-[var(--text-secondary)]">
               <span className="tracking-wide">To</span>
               <select
                 className={pillInputClass}
@@ -106,7 +106,7 @@ export default function SearchForm({
             </label>
           </div>
 
-          <label className="grid gap-1.5 text-xs font-medium text-[var(--text-secondary)] lg:w-44">
+          <label className="grid w-full gap-1.5 text-xs font-medium text-[var(--text-secondary)] lg:w-44">
             <span className="tracking-wide">Month</span>
             <input
               type="month"

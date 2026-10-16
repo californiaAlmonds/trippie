@@ -116,7 +116,7 @@ export default function Planner({ defaultMonth }: { defaultMonth: string }) {
   return (
     <div className="flex min-h-screen w-full flex-col">
       {/* Sticky translucent top bar */}
-      <header className="sticky top-0 z-30 border-b border-[var(--glass-border)] bg-[var(--glass-bg)] backdrop-blur-xl backdrop-saturate-150">
+      <header className="sticky top-0 z-30 border-b border-[var(--glass-border)] bg-[var(--glass-bg)] shadow-[var(--glass-highlight)] backdrop-blur-2xl backdrop-saturate-[1.75]">
         <div className="mx-auto flex h-14 w-full max-w-5xl items-center justify-between gap-4 px-4 sm:px-6">
           <div className="flex items-center gap-2.5">
             <BrandMarkIcon className="h-7 w-7 shrink-0 shadow-xs rounded-lg" />
