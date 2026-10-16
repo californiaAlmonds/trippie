@@ -70,22 +70,33 @@ test("readJson validates Content-Type, size limit (16 KB), and JSON object synta
   if (r5.ok) assert.equal(r5.data.email, "a@b.co");
 });
 
-test("clientKey returns first hop of x-forwarded-for if present else 'local'", () => {
-  assert.equal(clientKey(new Request("http://localhost:3111/api/auth/login")), "local");
-  assert.equal(
-    clientKey(
-      new Request("http://localhost:3111/api/auth/login", {
-        headers: { "x-forwarded-for": "203.0.113.7, 10.0.0.1" },
-      }),
-    ),
-    "203.0.113.7",
-  );
-  assert.equal(
-    clientKey(
-      new Request("http://localhost:3111/api/auth/login", {
-        headers: { "x-forwarded-for": "   " },
-      }),
-    ),
-    "local",
-  );
+test("clientKey returns 'shared' unless TRUSTED_PROXY=1 and returns first X-Forwarded-For hop only then", () => {
+  const prev = process.env.TRUSTED_PROXY;
+  try {
+    delete process.env.TRUSTED_PROXY;
+    const reqWithXff = new Request("http://localhost:3111/api/auth/login", {
+      headers: { "x-forwarded-for": "203.0.113.7, 10.0.0.1" },
+    });
+    const reqWithoutXff = new Request("http://localhost:3111/api/auth/login");
+    const reqBlankXff = new Request("http://localhost:3111/api/auth/login", {
+      headers: { "x-forwarded-for": "   " },
+    });
+
+    assert.equal(clientKey(reqWithXff), "shared");
+    assert.equal(clientKey(reqWithoutXff), "shared");
+
+    process.env.TRUSTED_PROXY = "0";
+    assert.equal(clientKey(reqWithXff), "shared");
+
+    process.env.TRUSTED_PROXY = "true";
+    assert.equal(clientKey(reqWithXff), "shared");
+
+    process.env.TRUSTED_PROXY = "1";
+    assert.equal(clientKey(reqWithXff), "203.0.113.7");
+    assert.equal(clientKey(reqWithoutXff), "shared");
+    assert.equal(clientKey(reqBlankXff), "shared");
+  } finally {
+    if (prev === undefined) delete process.env.TRUSTED_PROXY;
+    else process.env.TRUSTED_PROXY = prev;
+  }
 });

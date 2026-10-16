@@ -1,5 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
+import { buildResetEmail, buildVerifyEmail, mailConfigured, type SendMailInput, sendMail } from "../mailer.ts";
 import { getClient } from "../store.ts";
+import { validateEmail } from "./password.ts";
+import { getUserByEmail } from "./users.ts";
 
 export type TokenPurpose = "verify" | "reset";
 
@@ -70,6 +73,34 @@ export async function createEmailToken(
 }
 
 /**
+ * Non-mutating check whether a single-use token is currently valid, unused, and unexpired.
+ * Returns `user_id` if valid; otherwise `null`.
+ */
+export async function peekEmailToken(
+  rawToken: unknown,
+  purpose: TokenPurpose,
+  nowMs = Date.now(),
+): Promise<string | null> {
+  if (typeof rawToken !== "string" || rawToken.length < 16 || rawToken.length > 256) {
+    return null;
+  }
+  const tokenHash = hashEmailToken(rawToken);
+  const nowIso = new Date(nowMs).toISOString();
+
+  const client = await getClient();
+  const rs = await client.execute({
+    sql: `SELECT user_id
+          FROM email_tokens
+          WHERE token_hash = ? AND purpose = ? AND used_at IS NULL AND expires_at > ?`,
+    args: [tokenHash, purpose, nowIso],
+  });
+
+  const row = rs.rows[0];
+  if (!row) return null;
+  return String(row.user_id);
+}
+
+/**
  * Atomically consumes a single-use token:
  * `UPDATE email_tokens SET used_at=? WHERE token_hash=? AND purpose=? AND used_at IS NULL AND expires_at > ? RETURNING user_id`
  * Returns `user_id` if valid, unused, and unexpired; otherwise `null`.
@@ -97,4 +128,186 @@ export async function consumeEmailToken(
   const row = rs.rows[0];
   if (!row) return null;
   return String(row.user_id);
+}
+
+export interface TokenTransactionOptions {
+  nowMs?: number;
+  beforeUserUpdate?: (userId: string) => void | Promise<void>;
+}
+
+/**
+ * Atomically consumes a `'reset'` token, updates `users.password_hash` (+ `verified_at` if null),
+ * and deletes all sessions for that user in ONE write transaction (`client.transaction('write')`).
+ * Returns `false` (after rolling back) if the token is invalid, used, or expired.
+ * If the user update or session deletion fails, rolls back so the token remains unused and sessions remain intact.
+ */
+export async function resetPasswordWithToken(
+  rawToken: unknown,
+  newPasswordHash: string,
+  options?: number | TokenTransactionOptions,
+): Promise<boolean> {
+  if (typeof rawToken !== "string" || rawToken.length < 16 || rawToken.length > 256) {
+    return false;
+  }
+  const opts: TokenTransactionOptions =
+    typeof options === "number" ? { nowMs: options } : (options ?? {});
+  const nowMs = opts.nowMs ?? Date.now();
+  const nowIso = new Date(nowMs).toISOString();
+  const tokenHash = hashEmailToken(rawToken);
+
+  const client = await getClient();
+  const tx = await client.transaction("write");
+  try {
+    const consumed = await tx.execute({
+      sql: `UPDATE email_tokens
+            SET used_at = ?
+            WHERE token_hash = ? AND purpose = 'reset' AND used_at IS NULL AND expires_at > ?
+            RETURNING user_id`,
+      args: [nowIso, tokenHash, nowIso],
+    });
+    const row = consumed.rows[0];
+    if (!row) {
+      await tx.rollback();
+      return false;
+    }
+    const userId = String(row.user_id);
+
+    if (opts.beforeUserUpdate) {
+      await opts.beforeUserUpdate(userId);
+    }
+    if (typeof newPasswordHash !== "string" || newPasswordHash.length === 0) {
+      throw new Error("Invalid password hash");
+    }
+
+    const updated = await tx.execute({
+      sql: `UPDATE users
+            SET password_hash = ?, verified_at = COALESCE(verified_at, ?)
+            WHERE id = ?
+            RETURNING id`,
+      args: [newPasswordHash, nowIso, userId],
+    });
+    if (updated.rows.length === 0) {
+      throw new Error("User not found");
+    }
+
+    await tx.execute({
+      sql: "DELETE FROM sessions WHERE user_id = ?",
+      args: [userId],
+    });
+
+    await tx.commit();
+    return true;
+  } catch (err) {
+    if (!tx.closed) {
+      await tx.rollback().catch(() => undefined);
+    }
+    throw err;
+  } finally {
+    tx.close();
+  }
+}
+
+/**
+ * Atomically consumes a `'verify'` token and sets `users.verified_at` (if null)
+ * in ONE write transaction (`client.transaction('write')`).
+ * Returns `false` (after rolling back) if the token is invalid, used, or expired.
+ * If the user update fails, rolls back so the token remains unused.
+ */
+export async function verifyEmailWithToken(
+  rawToken: unknown,
+  options?: number | TokenTransactionOptions,
+): Promise<boolean> {
+  if (typeof rawToken !== "string" || rawToken.length < 16 || rawToken.length > 256) {
+    return false;
+  }
+  const opts: TokenTransactionOptions =
+    typeof options === "number" ? { nowMs: options } : (options ?? {});
+  const nowMs = opts.nowMs ?? Date.now();
+  const nowIso = new Date(nowMs).toISOString();
+  const tokenHash = hashEmailToken(rawToken);
+
+  const client = await getClient();
+  const tx = await client.transaction("write");
+  try {
+    const consumed = await tx.execute({
+      sql: `UPDATE email_tokens
+            SET used_at = ?
+            WHERE token_hash = ? AND purpose = 'verify' AND used_at IS NULL AND expires_at > ?
+            RETURNING user_id`,
+      args: [nowIso, tokenHash, nowIso],
+    });
+    const row = consumed.rows[0];
+    if (!row) {
+      await tx.rollback();
+      return false;
+    }
+    const userId = String(row.user_id);
+
+    if (opts.beforeUserUpdate) {
+      await opts.beforeUserUpdate(userId);
+    }
+
+    const updated = await tx.execute({
+      sql: `UPDATE users
+            SET verified_at = COALESCE(verified_at, ?)
+            WHERE id = ?
+            RETURNING id`,
+      args: [nowIso, userId],
+    });
+    if (updated.rows.length === 0) {
+      throw new Error("User not found");
+    }
+
+    await tx.commit();
+    return true;
+  } catch (err) {
+    if (!tx.closed) {
+      await tx.rollback().catch(() => undefined);
+    }
+    throw err;
+  } finally {
+    tx.close();
+  }
+}
+
+/**
+ * Background task scheduled via `after()` in `/api/auth/forgot`:
+ * validates the email, looks up the user, creates a reset token, and sends the reset email.
+ * Catches and swallows all errors, logging only a fixed generic string with no PII.
+ */
+export async function runForgotPasswordTask(
+  rawEmail: string,
+  sendMailFn: (input: SendMailInput) => Promise<void> = sendMail,
+): Promise<void> {
+  try {
+    const emailRes = validateEmail(rawEmail);
+    if (!emailRes.ok) return;
+    const user = await getUserByEmail(emailRes.email);
+    if (user && (mailConfigured() || process.env.NODE_ENV !== "production")) {
+      const token = await createEmailToken(user.id, "reset");
+      const resetUrl = buildResetLink(token);
+      await sendMailFn(buildResetEmail(user.email, resetUrl));
+    }
+  } catch {
+    console.error("forgot-password failed");
+  }
+}
+
+/**
+ * Background task scheduled via `after()` in `/api/auth/signup` and `/api/auth/resend`:
+ * creates a verification token and sends the verification email.
+ * Catches and swallows all errors, logging only a fixed generic string with no PII.
+ */
+export async function runVerificationEmailTask(
+  userId: string,
+  email: string,
+  sendMailFn: (input: SendMailInput) => Promise<void> = sendMail,
+): Promise<void> {
+  try {
+    const token = await createEmailToken(userId, "verify");
+    const verifyUrl = buildVerifyLink(token);
+    await sendMailFn(buildVerifyEmail(email, verifyUrl));
+  } catch {
+    console.error("verification email failed");
+  }
 }

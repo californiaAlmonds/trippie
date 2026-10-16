@@ -3,8 +3,10 @@ import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import {
   dummyVerify,
+  HashBusyError,
   hashPassword,
   isLoginPasswordAcceptable,
+  MAX_HASH_QUEUE,
   validateEmail,
   validatePasswordPolicy,
   verifyPassword,
@@ -86,4 +88,26 @@ test("dummyVerify completes without error and semaphore handles >2 concurrent ha
   assert.equal(typeof results[1], "string");
   assert.equal(typeof results[2], "string");
   assert.equal(results[3], false);
+});
+
+test("hashing queue rejects with HashBusyError when more than 16 requests are waiting", async () => {
+  const sampleHash = await hashPassword("sample-valid-password-12345");
+  const allowedTotal = 2 + MAX_HASH_QUEUE; // 2 active + 16 waiting = 18
+
+  const acceptedPromises: Array<Promise<unknown>> = [];
+  for (let i = 0; i < allowedTotal; i++) {
+    acceptedPromises.push(dummyVerify(`candidate-password-${i}`));
+  }
+
+  // Queue now has 2 active + 16 waiting; additional hash/verify/dummyVerify calls must reject with HashBusyError
+  const overflowHash = hashPassword("overflow-password-123456");
+  const overflowVerify = verifyPassword("sample-valid-password-12345", sampleHash);
+  const overflowDummy = dummyVerify("overflow-dummy-password");
+
+  await assert.rejects(overflowHash, (err: unknown) => err instanceof HashBusyError && /busy/i.test(err.message));
+  await assert.rejects(overflowVerify, (err: unknown) => err instanceof HashBusyError && /busy/i.test(err.message));
+  await assert.rejects(overflowDummy, (err: unknown) => err instanceof HashBusyError && /busy/i.test(err.message));
+
+  const settled = await Promise.all(acceptedPromises);
+  assert.equal(settled.length, allowedTotal);
 });

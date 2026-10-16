@@ -1,6 +1,5 @@
 import { authJson, checkOrigin, readJson } from "@/lib/auth/guard";
-import { consumeEmailToken } from "@/lib/auth/tokens";
-import { markUserVerified } from "@/lib/auth/users";
+import { peekEmailToken, verifyEmailWithToken } from "@/lib/auth/tokens";
 
 export async function POST(request: Request) {
   const originErr = checkOrigin(request);
@@ -13,14 +12,15 @@ export async function POST(request: Request) {
   if (typeof rawToken !== "string" || !rawToken.trim()) {
     return authJson({ error: "Invalid or expired link" }, 400);
   }
+  const token = rawToken.trim();
 
   try {
-    const userId = await consumeEmailToken(rawToken.trim(), "verify");
+    const userId = await peekEmailToken(token, "verify");
     if (!userId) {
       return authJson({ error: "Invalid or expired link" }, 400);
     }
 
-    const updated = await markUserVerified(userId);
+    const updated = await verifyEmailWithToken(token);
     if (!updated) {
       return authJson({ error: "Invalid or expired link" }, 400);
     }

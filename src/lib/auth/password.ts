@@ -7,27 +7,42 @@ const SALT_BYTES = 16;
 const KEY_LEN = 64;
 const MAX_MEM = 64 * 1024 * 1024; // 64 MiB
 const MAX_CONCURRENT = 2;
+export const MAX_HASH_QUEUE = 16;
 
-export const PASSWORD_MIN_LEN = 15;
-export const PASSWORD_MAX_LEN = 128;
+export class HashBusyError extends Error {
+  constructor(message = "Server busy, try again shortly") {
+    super(message);
+    this.name = "HashBusyError";
+  }
+}
 
-// Semaphore limiting concurrent scrypt invocations to 2.
+// Semaphore limiting concurrent scrypt invocations to 2 with a waiting-queue cap of 16.
 let activeCount = 0;
 const queue: Array<() => void> = [];
 
 async function withSemaphore<T>(fn: () => Promise<T>): Promise<T> {
-  if (activeCount >= MAX_CONCURRENT) {
+  if (activeCount < MAX_CONCURRENT) {
+    activeCount++;
+  } else {
+    if (queue.length >= MAX_HASH_QUEUE) {
+      throw new HashBusyError();
+    }
     await new Promise<void>((resolve) => queue.push(resolve));
   }
-  activeCount++;
   try {
     return await fn();
   } finally {
-    activeCount--;
     const next = queue.shift();
-    if (next) next();
+    if (next) {
+      next();
+    } else {
+      activeCount--;
+    }
   }
 }
+
+export const PASSWORD_MIN_LEN = 15;
+export const PASSWORD_MAX_LEN = 128;
 
 function deriveKey(password: string, salt: Buffer, N: number, r: number, p: number): Promise<Buffer> {
   return withSemaphore(
@@ -139,7 +154,10 @@ function parseStoredHash(stored: unknown): { N: number; r: number; p: number; sa
   return { N, r, p, salt, expected };
 }
 
-/** Verifies a candidate password against a stored `scrypt$N$r$p$saltB64$hashB64` string. Never throws. */
+/**
+ * Verifies a candidate password against a stored `scrypt$N$r$p$saltB64$hashB64` string.
+ * Rejects with `HashBusyError` if the hashing queue is full; otherwise never throws.
+ */
 export async function verifyPassword(password: unknown, storedHash: unknown): Promise<boolean> {
   if (typeof password !== "string" || password.includes("\0") || password.length > PASSWORD_MAX_LEN) {
     return false;
@@ -150,7 +168,10 @@ export async function verifyPassword(password: unknown, storedHash: unknown): Pr
     const actual = await deriveKey(password, parsed.salt, parsed.N, parsed.r, parsed.p);
     if (actual.length !== parsed.expected.length) return false;
     return timingSafeEqual(actual, parsed.expected);
-  } catch {
+  } catch (err) {
+    if (err instanceof HashBusyError) {
+      throw err;
+    }
     return false;
   }
 }

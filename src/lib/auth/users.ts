@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { getClient } from "../store.ts";
+import { computeSessionExpiry, generateSessionToken, hashSessionToken } from "./session-core.ts";
+import { peekEmailToken, resetPasswordWithToken, verifyEmailWithToken } from "./tokens.ts";
+
+export { peekEmailToken, resetPasswordWithToken, verifyEmailWithToken };
 
 export interface PublicUser {
   id: string;
@@ -89,6 +93,55 @@ export async function getUserById(userId: string): Promise<UserRow | null> {
     created_at: String(row.created_at),
     verified_at: row.verified_at == null ? null : String(row.verified_at),
   };
+}
+
+/**
+ * Conditionally inserts a session row with a single statement only when `users.password_hash`
+ * for `userId` still equals `expectedPasswordHash` (prevents a concurrent password reset from
+ * allowing an in-flight login with the old password to create a session).
+ * Returns `{ token, expiresAt }` when inserted (`rowsAffected > 0`), or `null` when `rowsAffected === 0`.
+ */
+export async function insertSessionIfPasswordMatches(
+  userId: string,
+  expectedPasswordHash: string,
+  options?: { existingToken?: string; nowMs?: number },
+): Promise<{ token: string; expiresAt: Date } | null> {
+  const token = generateSessionToken();
+  const tokenHash = hashSessionToken(token);
+  const nowMs = options?.nowMs ?? Date.now();
+  const nowIso = new Date(nowMs).toISOString();
+  const expiresAt = computeSessionExpiry(nowMs);
+  const expiresAtIso = expiresAt.toISOString();
+
+  const client = await getClient();
+  const rs = await client.execute({
+    sql: `INSERT INTO sessions (token_hash, user_id, created_at, expires_at)
+          SELECT ?, ?, ?, ?
+          WHERE EXISTS (
+            SELECT 1 FROM users WHERE id = ? AND password_hash = ?
+          )`,
+    args: [tokenHash, userId, nowIso, expiresAtIso, userId, expectedPasswordHash],
+  });
+
+  if (rs.rowsAffected === 0) {
+    return null;
+  }
+
+  await client.execute({
+    sql: "DELETE FROM sessions WHERE expires_at <= ?",
+    args: [nowIso],
+  });
+  if (options?.existingToken && options.existingToken.length <= 256) {
+    const existingHash = hashSessionToken(options.existingToken);
+    if (existingHash !== tokenHash) {
+      await client.execute({
+        sql: "DELETE FROM sessions WHERE token_hash = ?",
+        args: [existingHash],
+      });
+    }
+  }
+
+  return { token, expiresAt };
 }
 
 /** Sets `users.verified_at` if not already set. */

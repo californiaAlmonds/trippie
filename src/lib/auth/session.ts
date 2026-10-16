@@ -9,6 +9,9 @@ import {
   isSessionExpired,
   sessionCookieName,
 } from "./session-core.ts";
+import { insertSessionIfPasswordMatches } from "./users.ts";
+
+export { insertSessionIfPasswordMatches };
 
 export interface SessionUser {
   id: string;
@@ -54,6 +57,28 @@ export async function createSession(userId: string): Promise<string> {
 
   cookieStore.set(cookieName, token, buildSessionCookieOptions(expiresAt));
   return token;
+}
+
+/**
+ * Issues a fresh 30-day session for `userId` only when `users.password_hash` still equals
+ * `expectedPasswordHash`. Sets the session cookie and returns the token if inserted, or `null`
+ * (without setting a cookie) if the password hash changed concurrently.
+ */
+export async function createSessionIfPasswordMatches(
+  userId: string,
+  expectedPasswordHash: string,
+): Promise<string | null> {
+  const cookieStore = await cookies();
+  const cookieName = sessionCookieName();
+  const existingToken = cookieStore.get(cookieName)?.value;
+
+  const created = await insertSessionIfPasswordMatches(userId, expectedPasswordHash, { existingToken });
+  if (!created) {
+    return null;
+  }
+
+  cookieStore.set(cookieName, created.token, buildSessionCookieOptions(created.expiresAt));
+  return created.token;
 }
 
 /**

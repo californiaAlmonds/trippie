@@ -1,10 +1,17 @@
+import { after } from "next/server";
 import { authJson, checkOrigin, clientKey, readJson } from "@/lib/auth/guard";
-import { hashPassword, validateEmail, validatePasswordPolicy } from "@/lib/auth/password";
-import { ipRateLimitKey, rateLimit, SIGNUP_IP_LIMIT, SIGNUP_WINDOW_SECONDS } from "@/lib/auth/rateLimit";
+import { HashBusyError, hashPassword, validateEmail, validatePasswordPolicy } from "@/lib/auth/password";
+import {
+  ipRateLimitKey,
+  rateLimit,
+  SIGNUP_IP_LIMIT,
+  SIGNUP_SHARED_IP_LIMIT,
+  SIGNUP_WINDOW_SECONDS,
+} from "@/lib/auth/rateLimit";
 import { createSession } from "@/lib/auth/session";
-import { buildVerifyLink, createEmailToken } from "@/lib/auth/tokens";
+import { runVerificationEmailTask } from "@/lib/auth/tokens";
 import { createUser } from "@/lib/auth/users";
-import { buildVerifyEmail, mailConfigured, sendMail } from "@/lib/mailer";
+import { mailConfigured } from "@/lib/mailer";
 
 export async function POST(request: Request) {
   const originErr = checkOrigin(request);
@@ -25,7 +32,8 @@ export async function POST(request: Request) {
   const password = body.data.password as string;
 
   const ip = clientKey(request);
-  const ipRl = await rateLimit(ipRateLimitKey("signup", ip), SIGNUP_IP_LIMIT, SIGNUP_WINDOW_SECONDS);
+  const ipLimit = ip === "shared" ? SIGNUP_SHARED_IP_LIMIT : SIGNUP_IP_LIMIT;
+  const ipRl = await rateLimit(ipRateLimitKey("signup", ip), ipLimit, SIGNUP_WINDOW_SECONDS);
   if (!ipRl.allowed) {
     return authJson({ error: "Too many signup attempts. Please try again later." }, 429);
   }
@@ -48,13 +56,17 @@ export async function POST(request: Request) {
     await createSession(created.user.id);
 
     if (!allowUnverifiedDev) {
-      const token = await createEmailToken(created.user.id, "verify");
-      const verifyUrl = buildVerifyLink(token);
-      await sendMail(buildVerifyEmail(created.user.email, verifyUrl));
+      const { id, email } = created.user;
+      after(async () => {
+        await runVerificationEmailTask(id, email);
+      });
     }
 
     return authJson({ user: created.user }, 201);
-  } catch {
+  } catch (err) {
+    if (err instanceof HashBusyError) {
+      return authJson({ error: "Server busy, try again shortly" }, 503);
+    }
     return authJson({ error: "Could not create account" }, 500);
   }
 }

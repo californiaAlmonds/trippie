@@ -1,11 +1,12 @@
 import { authJson, authNoContent, checkOrigin, clientKey, readJson } from "@/lib/auth/guard";
-import { verifyPassword } from "@/lib/auth/password";
+import { HashBusyError, verifyPassword } from "@/lib/auth/password";
 import {
   clearRateLimit,
   emailRateLimitKey,
   ipRateLimitKey,
   LOGIN_EMAIL_LIMIT,
   LOGIN_IP_LIMIT,
+  LOGIN_SHARED_IP_LIMIT,
   LOGIN_WINDOW_SECONDS,
   rateLimit,
 } from "@/lib/auth/rateLimit";
@@ -38,11 +39,12 @@ export async function DELETE(request: Request) {
     return authJson({ error: "Password is required" }, 400);
   }
 
-  // Rate limited like login (5 per 15 min per email AND 20 per 15 min per IP), checked before hashing
+  // Rate limited like login (5 per 15 min per email AND 20 per 15 min per IP, or 200 when shared), checked before hashing
   const ip = clientKey(request);
+  const ipLimit = ip === "shared" ? LOGIN_SHARED_IP_LIMIT : LOGIN_IP_LIMIT;
   const emailKey = emailRateLimitKey("delete", sessionUser.email);
   const [ipRl, emailRl] = await Promise.all([
-    rateLimit(ipRateLimitKey("delete", ip), LOGIN_IP_LIMIT, LOGIN_WINDOW_SECONDS),
+    rateLimit(ipRateLimitKey("delete", ip), ipLimit, LOGIN_WINDOW_SECONDS),
     rateLimit(emailKey, LOGIN_EMAIL_LIMIT, LOGIN_WINDOW_SECONDS),
   ]);
   if (!ipRl.allowed || !emailRl.allowed) {
@@ -64,7 +66,10 @@ export async function DELETE(request: Request) {
     await deleteUserAccount(sessionUser.id);
     await destroySession();
     return authNoContent();
-  } catch {
+  } catch (err) {
+    if (err instanceof HashBusyError) {
+      return authJson({ error: "Server busy, try again shortly" }, 503);
+    }
     return authJson({ error: "Could not delete account" }, 500);
   }
 }

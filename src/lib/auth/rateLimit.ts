@@ -3,13 +3,16 @@ import { getClient } from "../store.ts";
 
 export const LOGIN_EMAIL_LIMIT = 5;
 export const LOGIN_IP_LIMIT = 20;
+export const LOGIN_SHARED_IP_LIMIT = 200;
 export const LOGIN_WINDOW_SECONDS = 15 * 60; // 15 minutes
 
 export const SIGNUP_IP_LIMIT = 5;
+export const SIGNUP_SHARED_IP_LIMIT = 30;
 export const SIGNUP_WINDOW_SECONDS = 60 * 60; // 1 hour
 
 export const FORGOT_EMAIL_LIMIT = 3;
 export const FORGOT_IP_LIMIT = 10;
+export const FORGOT_SHARED_IP_LIMIT = 60;
 export const FORGOT_WINDOW_SECONDS = 60 * 60; // 1 hour
 
 export const RESEND_USER_LIMIT = 3;

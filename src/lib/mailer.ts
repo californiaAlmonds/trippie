@@ -37,17 +37,23 @@ const SAFE_TOKEN = /^[A-Za-z0-9_-]{1,32}$/;
 
 /**
  * Sends an email via SMTP with TLS and strict certificate validation.
- * In non-production when SMTP is not configured, prints a single line with only the subject and devLink.
- * In production when SMTP is not configured, throws.
- * Never logs recipient addresses, tokens, SMTP error messages, or email bodies.
+ * When SMTP is not configured:
+ * - in `'production'`, throws;
+ * - in `'development'`, prints a single line with the subject and `devLink`;
+ * - in any other environment (e.g. `'test'` or unset), logs only a fixed generic line with no URL or PII.
+ * Never logs recipient addresses, tokens (outside development), SMTP error messages, or email bodies.
  */
 export async function sendMail(input: SendMailInput): Promise<void> {
   if (!mailConfigured()) {
-    if (process.env.NODE_ENV !== "production") {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("SMTP is not configured");
+    }
+    if (process.env.NODE_ENV === "development") {
       console.info(`[dev-mail] subject=${JSON.stringify(input.subject)} link=${input.devLink ?? ""}`);
       return;
     }
-    throw new Error("SMTP is not configured");
+    console.info("mail not configured; message skipped");
+    return;
   }
 
   const host = process.env.SMTP_HOST!.trim();

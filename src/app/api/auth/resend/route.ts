@@ -1,8 +1,9 @@
+import { after } from "next/server";
 import { authJson, checkOrigin, readJson } from "@/lib/auth/guard";
 import { rateLimit, RESEND_USER_LIMIT, RESEND_WINDOW_SECONDS, userRateLimitKey } from "@/lib/auth/rateLimit";
 import { getSessionUser } from "@/lib/auth/session";
-import { buildVerifyLink, createEmailToken } from "@/lib/auth/tokens";
-import { buildVerifyEmail, mailConfigured, sendMail } from "@/lib/mailer";
+import { runVerificationEmailTask } from "@/lib/auth/tokens";
+import { mailConfigured } from "@/lib/mailer";
 
 export async function POST(request: Request) {
   const originErr = checkOrigin(request);
@@ -28,12 +29,9 @@ export async function POST(request: Request) {
     return authJson({ error: "Email is not configured" }, 503);
   }
 
-  try {
-    const token = await createEmailToken(user.id, "verify");
-    const verifyUrl = buildVerifyLink(token);
-    await sendMail(buildVerifyEmail(user.email, verifyUrl));
-    return authJson({ ok: true }, 200);
-  } catch {
-    return authJson({ error: "Could not send verification email" }, 500);
-  }
+  after(async () => {
+    await runVerificationEmailTask(user.id, user.email);
+  });
+
+  return authJson({ ok: true }, 200);
 }

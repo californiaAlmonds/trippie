@@ -144,11 +144,13 @@ export async function readJson<T = Record<string, unknown>>(
 }
 
 /**
- * Resolves the client rate-limit key: first hop of `x-forwarded-for` if present, else `'local'`.
+ * Resolves the client rate-limit key: first hop of `x-forwarded-for` only when
+ * `TRUSTED_PROXY=1`, otherwise the constant `'shared'`.
  */
-export function clientKey(request: Request): string {
+export function clientKey(request: Request, trustedProxy = process.env.TRUSTED_PROXY): string {
+  if (trustedProxy !== "1") return "shared";
   const xff = request.headers.get("x-forwarded-for");
-  if (!xff) return "local";
+  if (!xff) return "shared";
   const firstHop = xff.split(",")[0]?.trim() ?? "";
-  return firstHop.length > 0 ? firstHop : "local";
+  return firstHop.length > 0 ? firstHop : "shared";
 }
