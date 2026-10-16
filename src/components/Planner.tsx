@@ -1,9 +1,13 @@
 "use client";
 
-import { useMemo, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import type { SearchResult, TripMode } from "@/lib/search";
 import type { DayFare, TripWindow } from "@/lib/types";
 import AccountSlot from "./AccountSlot";
+import { AccountProvider, useAccount } from "./account/AccountProvider";
+import AuthDialog from "./account/AuthDialog";
+import { api } from "./account/api";
+import UnverifiedBanner from "./account/UnverifiedBanner";
 import Banner from "./Banner";
 import BookingPanel from "./BookingPanel";
 import DayList from "./DayList";
@@ -11,8 +15,11 @@ import HistoryPanel from "./HistoryPanel";
 import { BrandMarkIcon } from "./icons";
 import OneWayBookingPanel from "./OneWayBookingPanel";
 import PriceCalendar from "./PriceCalendar";
+import SavedPlansDrawer from "./plans/SavedPlansDrawer";
+import SavePlanControl from "./plans/SavePlanControl";
 import RecentSearches from "./RecentSearches";
 import {
+  clearRecent,
   parseRecent,
   pushRecent,
   type Query,
@@ -24,7 +31,15 @@ import SearchForm from "./SearchForm";
 import { EmptyState, ResultsSkeleton } from "./Skeletons";
 import WindowList from "./WindowList";
 
-export default function Planner({ defaultMonth }: { defaultMonth: string }) {
+function PlannerContent({
+  defaultMonth,
+  registerReuse,
+}: {
+  defaultMonth: string;
+  registerReuse: (fn: (q: Query) => void) => void;
+}) {
+  const { user } = useAccount();
+
   const [trip, setTrip] = useState<TripMode>("round");
   const [origin, setOrigin] = useState("BLR");
   const [destination, setDestination] = useState("IXZ");
@@ -44,45 +59,100 @@ export default function Planner({ defaultMonth }: { defaultMonth: string }) {
     readRecent,
     serverSnapshotRecent,
   );
-  const recent = useMemo(() => parseRecent(recentRaw), [recentRaw]);
+  const localRecent = useMemo(() => parseRecent(recentRaw), [recentRaw]);
 
-  async function run(q: Query) {
-    setLoading(true);
-    setError("");
-    setSelected(null);
-    setSelectedDay(null);
-    try {
-      const qs = new URLSearchParams(
-        q.trip === "oneway"
-          ? {
-              origin: q.origin,
-              destination: q.destination,
-              month: q.month,
-              trip: q.trip,
-            }
-          : {
-              origin: q.origin,
-              destination: q.destination,
-              month: q.month,
-              trip: q.trip,
-              minGap: String(q.minGap),
-              maxGap: String(q.maxGap),
-            },
-      );
-      const res = await fetch(`/api/search?${qs}`);
-      const body: SearchResult & { error?: string } = await res.json();
-      if (!res.ok) throw new Error(body.error ?? "Search failed");
-      setResult({ ...body, query: q });
-      setSelected(body.windows[0] ?? null);
-      setSelectedDay(body.days[0] ?? null);
-      pushRecent(q);
-    } catch (err) {
-      setResult(null);
-      setError(err instanceof Error ? err.message : "Search failed");
-    } finally {
-      setLoading(false);
-    }
-  }
+  const [serverRecent, setServerRecent] = useState<Query[] | null>(null);
+
+  useEffect(() => {
+    if (!user) return;
+
+    let cancelled = false;
+    void api<{ recent?: unknown }>("/api/recent").then((res) => {
+      if (cancelled) return;
+      if (res.ok && Array.isArray(res.data?.recent)) {
+        const parsed = parseRecent(JSON.stringify(res.data.recent));
+        setServerRecent(parsed);
+      } else {
+        // Fall back to local list if /api/recent fails or isn't mounted yet
+        setServerRecent(null);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
+
+  const recent = user && serverRecent !== null ? serverRecent : localRecent;
+
+  const run = useCallback(
+    async (q: Query) => {
+      setLoading(true);
+      setError("");
+      setSelected(null);
+      setSelectedDay(null);
+      try {
+        const qs = new URLSearchParams(
+          q.trip === "oneway"
+            ? {
+                origin: q.origin,
+                destination: q.destination,
+                month: q.month,
+                trip: q.trip,
+              }
+            : {
+                origin: q.origin,
+                destination: q.destination,
+                month: q.month,
+                trip: q.trip,
+                minGap: String(q.minGap),
+                maxGap: String(q.maxGap),
+              },
+        );
+        const res = await fetch(`/api/search?${qs}`);
+        const body: SearchResult & { error?: string } = await res.json();
+        if (!res.ok) throw new Error(body.error ?? "Search failed");
+        setResult({ ...body, query: q });
+        setSelected(body.windows[0] ?? null);
+        setSelectedDay(body.days[0] ?? null);
+        pushRecent(q);
+
+        if (user) {
+          setServerRecent((prev) => {
+            if (prev === null) return null;
+            const same = (r: Query) => JSON.stringify(r) === JSON.stringify(q);
+            return [q, ...prev.filter((r) => !same(r))].slice(0, 5);
+          });
+          void api("/api/recent", { method: "POST", body: q });
+        }
+      } catch (err) {
+        setResult(null);
+        setError(err instanceof Error ? err.message : "Search failed");
+      } finally {
+        setLoading(false);
+      }
+    },
+    [user],
+  );
+
+  const reuse = useCallback(
+    (q: Query) => {
+      setOrigin(q.origin);
+      setDestination(q.destination);
+      setMonth(q.month);
+      setTrip(q.trip);
+      if (q.trip === "round") {
+        setMinGap(q.minGap);
+        setMaxGap(q.maxGap);
+      }
+      void run(q);
+    },
+    [run],
+  );
+
+  useEffect(() => {
+    registerReuse(reuse);
+  }, [registerReuse, reuse]);
 
   function search(e: React.FormEvent) {
     e.preventDefault();
@@ -96,16 +166,12 @@ export default function Planner({ defaultMonth }: { defaultMonth: string }) {
     });
   }
 
-  function reuse(q: Query) {
-    setOrigin(q.origin);
-    setDestination(q.destination);
-    setMonth(q.month);
-    setTrip(q.trip);
-    if (q.trip === "round") {
-      setMinGap(q.minGap);
-      setMaxGap(q.maxGap);
+  function handleClearRecent() {
+    clearRecent();
+    if (user) {
+      setServerRecent((prev) => (prev !== null ? [] : null));
+      void api("/api/recent", { method: "DELETE" });
     }
-    void run(q);
   }
 
   function swapAirports() {
@@ -129,6 +195,8 @@ export default function Planner({ defaultMonth }: { defaultMonth: string }) {
           </div>
         </div>
       </header>
+
+      <UnverifiedBanner />
 
       <div className="mx-auto flex w-full max-w-5xl flex-1 flex-col px-4 py-8 sm:px-6 sm:py-10">
         {/* Hero section */}
@@ -160,7 +228,11 @@ export default function Planner({ defaultMonth }: { defaultMonth: string }) {
             onSubmit={search}
           />
 
-          <RecentSearches recent={recent} onSelect={reuse} />
+          <RecentSearches
+            recent={recent}
+            onSelect={reuse}
+            onClear={handleClearRecent}
+          />
 
           {error && <Banner tone="error">{error}</Banner>}
 
@@ -194,6 +266,12 @@ export default function Planner({ defaultMonth }: { defaultMonth: string }) {
                       days={result.days}
                       selectedDay={selectedDay}
                       onSelect={setSelectedDay}
+                      headerAction={
+                        <SavePlanControl
+                          key={JSON.stringify(result.query)}
+                          query={result.query}
+                        />
+                      }
                     />
                     <div className="grid gap-6 md:sticky md:top-20">
                       {selectedDay && (
@@ -217,6 +295,12 @@ export default function Planner({ defaultMonth }: { defaultMonth: string }) {
                     windows={result.windows}
                     selected={selected}
                     onSelect={setSelected}
+                    headerAction={
+                      <SavePlanControl
+                        key={JSON.stringify(result.query)}
+                        query={result.query}
+                      />
+                    }
                   />
                   <div className="grid gap-6 md:sticky md:top-20">
                     {selected && (
@@ -249,6 +333,35 @@ export default function Planner({ defaultMonth }: { defaultMonth: string }) {
             : "Trippie · Fares are indicative; confirm final prices on the booking site."}
         </footer>
       </div>
+
+      <AuthDialog />
+      <SavedPlansDrawer />
     </div>
+  );
+}
+
+export default function Planner({ defaultMonth }: { defaultMonth: string }) {
+  const [reuseHandler, setReuseHandler] = useState<((q: Query) => void) | null>(
+    null,
+  );
+
+  const registerReuse = useCallback((fn: (q: Query) => void) => {
+    setReuseHandler(() => fn);
+  }, []);
+
+  const handleSearchAgain = useCallback(
+    (q: Query) => {
+      reuseHandler?.(q);
+    },
+    [reuseHandler],
+  );
+
+  return (
+    <AccountProvider onSearchAgain={handleSearchAgain}>
+      <PlannerContent
+        defaultMonth={defaultMonth}
+        registerReuse={registerReuse}
+      />
+    </AccountProvider>
   );
 }

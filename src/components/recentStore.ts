@@ -57,3 +57,9 @@ export function pushRecent(q: Query) {
   localStorage.setItem(RECENT_KEY, JSON.stringify(next));
   listeners.forEach((l) => l());
 }
+
+export function clearRecent() {
+  localStorage.removeItem(RECENT_KEY);
+  listeners.forEach((l) => l());
+}
+
