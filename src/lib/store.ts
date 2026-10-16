@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync } from "node:fs";
-import { createClient, type InStatement, type ResultSet, type TransactionMode } from "@libsql/client";
+import { type Client, createClient, type InStatement, type ResultSet, type TransactionMode } from "@libsql/client";
+import { runMigrations } from "./migrations.ts";
 import type { DayFare } from "./types.ts";
 import { addDays, computeWindows, monthBounds } from "./windows.ts";
 
@@ -17,29 +18,9 @@ export interface FareRecord {
 }
 
 let ready: Promise<unknown> | undefined;
-
-const SCHEMA = `
-  CREATE TABLE IF NOT EXISTS fares (
-    snapshot_day TEXT NOT NULL,
-    origin TEXT NOT NULL,
-    destination TEXT NOT NULL,
-    travel_date TEXT NOT NULL,
-    price INTEGER,
-    airline TEXT,
-    stops INTEGER,
-    status TEXT NOT NULL CHECK (status IN ('ok','no_flights','blocked','parse_error')),
-    provider TEXT NOT NULL,
-    scraped_at TEXT NOT NULL,
-    PRIMARY KEY (snapshot_day, origin, destination, travel_date)
-  );
-  CREATE TABLE IF NOT EXISTS runs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    started_at TEXT NOT NULL,
-    finished_at TEXT,
-    ok INTEGER NOT NULL DEFAULT 0,
-    failed INTEGER NOT NULL DEFAULT 0,
-    note TEXT
-  );`;
+let rawClient: Client | undefined;
+let conn: Db | undefined;
+let activeUrl: string | undefined;
 
 /** True when a hosted Turso DB is configured or a local scrape DB file exists. */
 export function dbConfigured(): boolean {
@@ -63,21 +44,30 @@ async function retry<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-let conn: Db | undefined;
-
-async function db(): Promise<Db> {
-  if (!conn) {
-    const url = process.env.TURSO_DATABASE_URL ?? "file:data/trippie.db";
-    if (url.startsWith("file:")) mkdirSync("data", { recursive: true });
+async function ensureReady(): Promise<{ client: Client; conn: Db }> {
+  const url = process.env.TURSO_DATABASE_URL ?? "file:data/trippie.db";
+  if (!rawClient || !conn || activeUrl !== url) {
+    if (url === "file:data/trippie.db") mkdirSync("data", { recursive: true });
     const client = createClient({ url, authToken: process.env.TURSO_AUTH_TOKEN });
+    rawClient = client;
+    activeUrl = url;
     conn = {
       execute: (stmt) => retry(() => client.execute(stmt)),
       batch: (stmts, mode) => retry(() => client.batch(stmts, mode)),
     };
-    ready = retry(() => client.executeMultiple(SCHEMA));
+    ready = retry(() => runMigrations(client));
   }
   await ready;
-  return conn;
+  return { client: rawClient, conn };
+}
+
+/** Raw libSQL client (no retry wrapper) after migrations have been applied. */
+export async function getClient(): Promise<Client> {
+  return (await ensureReady()).client;
+}
+
+async function db(): Promise<Db> {
+  return (await ensureReady()).conn;
 }
 
 export async function saveFares(records: FareRecord[], provider = "google-flights") {
