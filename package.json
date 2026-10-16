@@ -7,18 +7,20 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --test src/lib/windows.test.ts src/lib/scrape/parse.test.ts src/lib/search.test.ts",
+    "test": "node --test src/lib/windows.test.ts src/lib/scrape/parse.test.ts src/lib/search.test.ts src/lib/migrations.test.ts src/lib/auth/password.test.ts src/lib/auth/session-core.test.ts src/lib/auth/guard.test.ts src/lib/auth/rateLimit.test.ts src/lib/auth/tokens.test.ts",
     "scrape": "bun scripts/scrape.ts"
   },
   "dependencies": {
     "@libsql/client": "^0.18.0",
     "next": "16.4.0",
+    "nodemailer": "^10.1.1",
     "react": "19.3.0",
     "react-dom": "19.3.0"
   },
   "devDependencies": {
     "@tailwindcss/turbopack": "^4",
     "@types/node": "^24.19.2",
+    "@types/nodemailer": "^8.0.2",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
