@@ -1,24 +1,45 @@
 import { useEffect, useId, useState } from "react";
 import type { TripWindow } from "@/lib/types";
 import { inr } from "./format";
-import GlassCard from "./ui/GlassCard";
+import { SparklineEmptyIcon } from "./icons";
 
 interface Point {
   day: string;
   total: number;
 }
 
-interface PriceHistoryProps {
+interface HistoryPanelProps {
   window: TripWindow;
   origin: string;
   destination: string;
 }
 
-export default function PriceHistory({
+function buildSmoothPaths(coords: { x: number; y: number }[], bottomY: number) {
+  if (coords.length === 0) return { line: "", area: "" };
+  if (coords.length === 1) {
+    const p = coords[0];
+    return { line: `M ${p.x},${p.y}`, area: "" };
+  }
+
+  let d = `M ${coords[0].x},${coords[0].y}`;
+  for (let i = 0; i < coords.length - 1; i++) {
+    const curr = coords[i];
+    const next = coords[i + 1];
+    const midX = (curr.x + next.x) / 2;
+    d += ` C ${midX},${curr.y} ${midX},${next.y} ${next.x},${next.y}`;
+  }
+
+  const first = coords[0];
+  const last = coords[coords.length - 1];
+  const area = `${d} L ${last.x},${bottomY} L ${first.x},${bottomY} Z`;
+  return { line: d, area };
+}
+
+export default function HistoryPanel({
   window: w,
   origin,
   destination,
-}: PriceHistoryProps) {
+}: HistoryPanelProps) {
   const [points, setPoints] = useState<Point[] | null>(null);
   const gradId = useId();
 
@@ -63,18 +84,12 @@ export default function PriceHistory({
       ? H / 2
       : H - padY - ((t - lo) / (hi - lo)) * (H - padY * 2);
 
-  const lineCoords = points.map((p, i) => `${x(i)},${y(p.total)}`).join(" ");
-  const areaPath =
-    points.length >= 2
-      ? `M ${x(0)},${H - 2} L ${points
-          .map((p, i) => `${x(i)},${y(p.total)}`)
-          .join(" L ")} L ${x(points.length - 1)},${H - 2} Z`
-      : "";
-
+  const coords = points.map((p, i) => ({ x: x(i), y: y(p.total) }));
+  const { line, area } = buildSmoothPaths(coords, H - 2);
   const lastIndex = points.length - 1;
 
   return (
-    <GlassCard as="section" className="p-5 sm:p-6 grid gap-2.5">
+    <section className="glass p-5 sm:p-6 grid gap-2.5">
       <div className="flex items-center justify-between gap-2">
         <h2 className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
           Price history
@@ -87,10 +102,15 @@ export default function PriceHistory({
       </div>
 
       {points.length < 2 ? (
-        <p className="glass-subtle rounded-xl px-3.5 py-2.5 text-xs text-[var(--text-muted)]">
-          {points.length === 0 ? "No snapshots yet." : "1 snapshot so far."}{" "}
-          History builds up with each daily scrape.
-        </p>
+        <div className="glass-subtle flex items-center gap-3 rounded-2xl px-3.5 py-3 text-xs text-[var(--text-muted)]">
+          <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-slate-500/10 text-[var(--accent)]">
+            <SparklineEmptyIcon className="h-4 w-4" />
+          </span>
+          <p>
+            {points.length === 0 ? "No snapshots yet." : "1 snapshot so far."}{" "}
+            History builds up with each daily scrape.
+          </p>
+        </div>
       ) : (
         <>
           <div className="glass-subtle rounded-2xl p-3">
@@ -102,22 +122,22 @@ export default function PriceHistory({
             >
               <defs>
                 <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.32" />
+                  <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.34" />
                   <stop offset="100%" stopColor="var(--accent)" stopOpacity="0.0" />
                 </linearGradient>
               </defs>
-              <path d={areaPath} fill={`url(#${gradId})`} />
-              <polyline
+              <path d={area} fill={`url(#${gradId})`} />
+              <path
+                d={line}
                 fill="none"
                 stroke="var(--accent)"
                 strokeWidth="2.25"
                 strokeLinecap="round"
                 strokeLinejoin="round"
-                points={lineCoords}
               />
               <circle
-                cx={x(lastIndex)}
-                cy={y(points[lastIndex].total)}
+                cx={coords[lastIndex].x}
+                cy={coords[lastIndex].y}
                 r="3.5"
                 fill="var(--accent)"
               />
@@ -128,12 +148,18 @@ export default function PriceHistory({
               {points[0].day} to {points[lastIndex].day}
             </span>
             <span>
-              low <strong className="font-semibold text-[var(--text-primary)]">{inr.format(lo)}</strong>, high{" "}
-              <strong className="font-semibold text-[var(--text-primary)]">{inr.format(hi)}</strong>
+              low{" "}
+              <strong className="font-semibold text-[var(--text-primary)]">
+                {inr.format(lo)}
+              </strong>
+              , high{" "}
+              <strong className="font-semibold text-[var(--text-primary)]">
+                {inr.format(hi)}
+              </strong>
             </span>
           </div>
         </>
       )}
-    </GlassCard>
+    </section>
   );
 }

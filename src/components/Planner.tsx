@@ -4,22 +4,24 @@ import { useMemo, useState, useSyncExternalStore } from "react";
 import type { SearchResult, TripMode } from "@/lib/search";
 import type { DayFare, TripWindow } from "@/lib/types";
 import AccountSlot from "./AccountSlot";
+import Banner from "./Banner";
 import BookingPanel from "./BookingPanel";
-import DaysList from "./DaysList";
+import DayList from "./DayList";
+import HistoryPanel from "./HistoryPanel";
+import { BrandMarkIcon } from "./icons";
+import OneWayBookingPanel from "./OneWayBookingPanel";
+import PriceCalendar from "./PriceCalendar";
+import RecentSearches from "./RecentSearches";
 import {
   parseRecent,
   pushRecent,
   type Query,
   readRecent,
+  serverSnapshotRecent,
   subscribeRecent,
-} from "./format";
-import HeatCalendar from "./HeatCalendar";
-import PriceHistory from "./PriceHistory";
-import RecentSearches from "./RecentSearches";
+} from "./recentStore";
 import SearchForm from "./SearchForm";
-import GlassCard from "./ui/GlassCard";
-import { AlertIcon, InfoIcon, PlaneIcon } from "./ui/Icons";
-import ResultsSkeleton from "./ui/Skeleton";
+import { EmptyState, ResultsSkeleton } from "./Skeletons";
 import WindowList from "./WindowList";
 
 export default function Planner({ defaultMonth }: { defaultMonth: string }) {
@@ -37,7 +39,11 @@ export default function Planner({ defaultMonth }: { defaultMonth: string }) {
   const [selected, setSelected] = useState<TripWindow | null>(null);
   const [selectedDay, setSelectedDay] = useState<DayFare | null>(null);
 
-  const recentRaw = useSyncExternalStore(subscribeRecent, readRecent, () => "[]");
+  const recentRaw = useSyncExternalStore(
+    subscribeRecent,
+    readRecent,
+    serverSnapshotRecent,
+  );
   const recent = useMemo(() => parseRecent(recentRaw), [recentRaw]);
 
   async function run(q: Query) {
@@ -108,139 +114,141 @@ export default function Planner({ defaultMonth }: { defaultMonth: string }) {
   }
 
   return (
-    <div className="mx-auto flex min-h-screen w-full max-w-5xl flex-col px-4 py-8 sm:px-6 sm:py-12">
-      <header className="mb-6 flex items-start justify-between gap-4">
-        <div className="flex items-center gap-3.5">
-          <div className="glass flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-[var(--accent)]">
-            <PlaneIcon className="h-5 w-5" />
-          </div>
-          <div>
-            <h1 className="text-3xl sm:text-4xl font-semibold tracking-[-0.02em] text-[var(--text-primary)]">
+    <div className="flex min-h-screen w-full flex-col">
+      {/* Sticky translucent top bar */}
+      <header className="sticky top-0 z-30 border-b border-[var(--glass-border)] bg-[var(--glass-bg)] backdrop-blur-xl backdrop-saturate-150">
+        <div className="mx-auto flex h-14 w-full max-w-5xl items-center justify-between gap-4 px-4 sm:px-6">
+          <div className="flex items-center gap-2.5">
+            <BrandMarkIcon className="h-7 w-7 shrink-0 shadow-xs rounded-lg" />
+            <span className="text-base font-semibold tracking-tight text-[var(--text-primary)]">
               Trippie
-            </h1>
-            <p className="mt-0.5 text-sm text-[var(--text-secondary)]">
-              Pick a month and how long you want to stay. We find the cheapest dates.
-            </p>
+            </span>
           </div>
-        </div>
-        <div className="shrink-0">
-          <AccountSlot />
+          <div className="flex items-center shrink-0">
+            <AccountSlot />
+          </div>
         </div>
       </header>
 
-      <main className="flex-1">
-        <SearchForm
-          trip={trip}
-          origin={origin}
-          destination={destination}
-          month={month}
-          minGap={minGap}
-          maxGap={maxGap}
-          loading={loading}
-          onTripChange={setTrip}
-          onOriginChange={setOrigin}
-          onDestinationChange={setDestination}
-          onSwapAirports={swapAirports}
-          onMonthChange={setMonth}
-          onMinGapChange={setMinGap}
-          onMaxGapChange={setMaxGap}
-          onSubmit={search}
-        />
+      <div className="mx-auto flex w-full max-w-5xl flex-1 flex-col px-4 py-8 sm:px-6 sm:py-10">
+        {/* Hero section */}
+        <section className="mb-6 sm:mb-8">
+          <h1 className="hero-title-gradient text-3xl sm:text-4xl font-bold tracking-tight">
+            Find your cheapest flight window
+          </h1>
+          <p className="mt-1.5 text-sm sm:text-base text-[var(--text-secondary)]">
+            Pick a month and how long you want to stay. We find the cheapest dates.
+          </p>
+        </section>
 
-        <RecentSearches recent={recent} onSelect={reuse} />
+        <main className="flex-1">
+          <SearchForm
+            trip={trip}
+            origin={origin}
+            destination={destination}
+            month={month}
+            minGap={minGap}
+            maxGap={maxGap}
+            loading={loading}
+            onTripChange={setTrip}
+            onOriginChange={setOrigin}
+            onDestinationChange={setDestination}
+            onSwapAirports={swapAirports}
+            onMonthChange={setMonth}
+            onMinGapChange={setMinGap}
+            onMaxGapChange={setMaxGap}
+            onSubmit={search}
+          />
 
-        {error && (
-          <GlassCard
-            variant="danger"
-            role="alert"
-            className="mt-5 flex items-center gap-2.5 px-4 py-3 text-sm font-medium"
-          >
-            <AlertIcon className="h-4 w-4 shrink-0" />
-            <span>{error}</span>
-          </GlassCard>
-        )}
+          <RecentSearches recent={recent} onSelect={reuse} />
 
-        {loading && <ResultsSkeleton />}
+          {error && <Banner tone="error">{error}</Banner>}
 
-        {result && !loading && (
-          <>
-            {result.isDemo && (
-              <GlassCard
-                variant="amber"
-                className="mt-5 flex items-center gap-2.5 px-4 py-3 text-xs sm:text-sm font-medium"
-              >
-                <InfoIcon className="h-4 w-4 shrink-0" />
-                <span>
+          {loading && <ResultsSkeleton />}
+
+          {!result && !loading && !error && (
+            <EmptyState
+              title="Ready when you are"
+              description="Choose your departure and arrival airports, pick a month, and we will rank the lowest-fare windows across the entire month."
+            />
+          )}
+
+          {result && !loading && (
+            <div className="animate-results">
+              {result.isDemo && (
+                <Banner tone="demo">
                   Demo data: these prices are simulated. Set TRAVELPAYOUTS_TOKEN in
                   .env.local for real fares.
-                </span>
-              </GlassCard>
-            )}
+                </Banner>
+              )}
 
-            {result.trip === "oneway" ? (
-              result.days.length === 0 ? (
-                <GlassCard className="mt-6 p-8 text-center text-sm text-[var(--text-secondary)]">
-                  No fares found for this month. Try another route or month.
-                </GlassCard>
+              {result.trip === "oneway" ? (
+                result.days.length === 0 ? (
+                  <EmptyState
+                    title="No fares found for this month"
+                    description="Try another route or month."
+                  />
+                ) : (
+                  <div className="mt-6 grid gap-6 md:grid-cols-[1.12fr_0.88fr] items-start">
+                    <DayList
+                      days={result.days}
+                      selectedDay={selectedDay}
+                      onSelect={setSelectedDay}
+                    />
+                    <div className="grid gap-6 md:sticky md:top-20">
+                      {selectedDay && (
+                        <OneWayBookingPanel
+                          day={selectedDay}
+                          origin={result.query.origin}
+                          destination={result.query.destination}
+                        />
+                      )}
+                    </div>
+                  </div>
+                )
+              ) : result.windows.length === 0 ? (
+                <EmptyState
+                  title="No windows found"
+                  description="The provider has no fares for both legs."
+                />
               ) : (
                 <div className="mt-6 grid gap-6 md:grid-cols-[1.12fr_0.88fr] items-start">
-                  <DaysList
-                    days={result.days}
-                    selectedDay={selectedDay}
-                    onSelect={setSelectedDay}
+                  <WindowList
+                    windows={result.windows}
+                    selected={selected}
+                    onSelect={setSelected}
                   />
-                  <div className="grid gap-6 md:sticky md:top-6">
-                    {selectedDay && (
+                  <div className="grid gap-6 md:sticky md:top-20">
+                    {selected && (
                       <BookingPanel
-                        target={{ mode: "oneway", day: selectedDay }}
+                        window={selected}
+                        origin={result.query.origin}
+                        destination={result.query.destination}
+                      />
+                    )}
+                    {selected && (
+                      <HistoryPanel
+                        key={`${selected.depart.date}-${selected.ret.date}`}
+                        window={selected}
                         origin={result.query.origin}
                         destination={result.query.destination}
                       />
                     )}
                   </div>
                 </div>
-              )
-            ) : result.windows.length === 0 ? (
-              <GlassCard className="mt-6 p-8 text-center text-sm text-[var(--text-secondary)]">
-                No windows found. The provider has no fares for both legs.
-              </GlassCard>
-            ) : (
-              <div className="mt-6 grid gap-6 md:grid-cols-[1.12fr_0.88fr] items-start">
-                <WindowList
-                  windows={result.windows}
-                  selected={selected}
-                  onSelect={setSelected}
-                />
-                <div className="grid gap-6 md:sticky md:top-6">
-                  {selected && (
-                    <BookingPanel
-                      target={{ mode: "round", window: selected }}
-                      origin={result.query.origin}
-                      destination={result.query.destination}
-                    />
-                  )}
-                  {selected && (
-                    <PriceHistory
-                      key={`${selected.depart.date}-${selected.ret.date}`}
-                      window={selected}
-                      origin={result.query.origin}
-                      destination={result.query.destination}
-                    />
-                  )}
-                </div>
-              </div>
-            )}
+              )}
 
-            <HeatCalendar trip={result.trip} calendar={result.calendar} />
-          </>
-        )}
-      </main>
+              <PriceCalendar trip={result.trip} calendar={result.calendar} />
+            </div>
+          )}
+        </main>
 
-      <footer className="mt-12 pt-4 text-center text-xs text-[var(--text-muted)]">
-        {result
-          ? `Source: ${result.provider}. Fares are indicative; confirm on the booking site.`
-          : "Trippie · Fares are indicative; confirm final prices on the booking site."}
-      </footer>
+        <footer className="mt-12 pt-4 text-center text-xs text-[var(--text-muted)]">
+          {result
+            ? `Source: ${result.provider}. Fares are indicative; confirm on the booking site.`
+            : "Trippie · Fares are indicative; confirm final prices on the booking site."}
+        </footer>
+      </div>
     </div>
   );
 }

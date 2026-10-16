@@ -1,13 +1,11 @@
-import type { TripMode } from "@/lib/search";
-
-export interface Query {
-  origin: string;
-  destination: string;
-  month: string;
-  trip: TripMode;
-  minGap: number;
-  maxGap: number;
-}
+export {
+  type Query,
+  parseRecent,
+  pushRecent,
+  readRecent,
+  serverSnapshotRecent,
+  subscribeRecent,
+} from "./recentStore";
 
 export const inr = new Intl.NumberFormat("en-IN", {
   style: "currency",
@@ -23,49 +21,15 @@ export const fmtDate = (d: string) =>
     timeZone: "UTC",
   });
 
-const RECENT_KEY = "trippie.recent";
-const listeners = new Set<() => void>();
-
-export const subscribeRecent = (cb: () => void) => {
-  listeners.add(cb);
-  return () => void listeners.delete(cb);
-};
-
-export const readRecent = () => localStorage.getItem(RECENT_KEY) ?? "[]";
-
-export function parseRecent(raw: string): Query[] {
-  try {
-    const list: unknown = JSON.parse(raw);
-    if (!Array.isArray(list)) return [];
-    const out: Query[] = [];
-    for (const q of list) {
-      if (
-        typeof q?.origin === "string" &&
-        typeof q.destination === "string" &&
-        typeof q.month === "string" &&
-        (q.trip === undefined || q.trip === "round" || q.trip === "oneway") &&
-        Number.isInteger(q.minGap) &&
-        Number.isInteger(q.maxGap)
-      ) {
-        out.push({
-          origin: q.origin,
-          destination: q.destination,
-          month: q.month,
-          trip: q.trip ?? "round",
-          minGap: q.minGap,
-          maxGap: q.maxGap,
-        });
-      }
-    }
-    return out;
-  } catch {
-    return [];
+export function formatDeltaFromBest(price: number, best: number): {
+  pct: number;
+  tone: "green" | "amber" | "red";
+  label: string;
+} {
+  if (best <= 0 || price <= best) {
+    return { pct: 0, tone: "green", label: "0%" };
   }
-}
-
-export function pushRecent(q: Query) {
-  const same = (r: Query) => JSON.stringify(r) === JSON.stringify(q);
-  const next = [q, ...parseRecent(readRecent()).filter((r) => !same(r))].slice(0, 5);
-  localStorage.setItem(RECENT_KEY, JSON.stringify(next));
-  listeners.forEach((l) => l());
+  const pct = Math.max(1, Math.round(((price - best) / best) * 100));
+  const tone = pct <= 8 ? "green" : pct <= 20 ? "amber" : "red";
+  return { pct, tone, label: `+${pct}%` };
 }

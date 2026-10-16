@@ -2,7 +2,6 @@ import { useMemo } from "react";
 import type { TripMode } from "@/lib/search";
 import { addDays, monthBounds } from "@/lib/windows";
 import { fmtDate, inr } from "./format";
-import GlassCard from "./ui/GlassCard";
 
 interface CalendarEntry {
   date: string;
@@ -10,7 +9,7 @@ interface CalendarEntry {
   gap?: number;
 }
 
-interface HeatCalendarProps {
+interface PriceCalendarProps {
   trip: TripMode;
   calendar: CalendarEntry[];
 }
@@ -24,7 +23,7 @@ function monthDays(month: string): string[] {
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
 
-export default function HeatCalendar({ trip, calendar }: HeatCalendarProps) {
+export default function PriceCalendar({ trip, calendar }: PriceCalendarProps) {
   const calendarByDate = useMemo(
     () => new Map(calendar.map((c) => [c.date, c])),
     [calendar],
@@ -38,7 +37,7 @@ export default function HeatCalendar({ trip, calendar }: HeatCalendarProps) {
   const days = monthDays(monthKey);
 
   return (
-    <GlassCard as="section" className="mt-8 p-5 sm:p-6">
+    <section className="glass mt-8 p-5 sm:p-6">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
           {trip === "oneway"
@@ -115,6 +114,6 @@ export default function HeatCalendar({ trip, calendar }: HeatCalendarProps) {
           );
         })}
       </div>
-    </GlassCard>
+    </section>
   );
 }
