@@ -18,7 +18,7 @@ export const SITES: Site[] = [
     verified: true,
     url: (o, d, dep, ret) =>
       `https://www.google.com/travel/flights?curr=INR&q=${encodeURIComponent(
-        `Flights to ${d} from ${o} on ${dep}${ret ? ` through ${ret}` : ""}`,
+        `Flights to ${d} from ${o} on ${dep}${ret ? ` through ${ret}` : " oneway"}`,
       )}`,
   },
   {

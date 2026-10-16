@@ -15,8 +15,10 @@ export function legsFor(p: SearchParams, today: string): Leg[] {
     for (let d = from < today ? today : from; d <= to; d = addDays(d, 1)) dates.push(d);
     return dates;
   };
+  const out: Leg = { origin: p.origin, destination: p.destination, dates: range(first, last) };
+  if (p.trip === "oneway") return [out];
   return [
-    { origin: p.origin, destination: p.destination, dates: range(first, last) },
+    out,
     { origin: p.destination, destination: p.origin, dates: range(addDays(first, p.minGap), addDays(last, p.maxGap)) },
   ];
 }

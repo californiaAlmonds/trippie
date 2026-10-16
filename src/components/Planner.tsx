@@ -3,8 +3,8 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { AIRPORTS } from "@/lib/airports";
 import { orderedSites, SITES } from "@/lib/links";
-import type { SearchResult } from "@/lib/search";
-import type { TripWindow } from "@/lib/types";
+import type { SearchResult, TripMode } from "@/lib/search";
+import type { DayFare, TripWindow } from "@/lib/types";
 import { addDays, monthBounds } from "@/lib/windows";
 
 function monthDays(month: string): string[] {
@@ -24,6 +24,7 @@ interface Query {
   origin: string;
   destination: string;
   month: string;
+  trip: TripMode;
   minGap: number;
   maxGap: number;
 }
@@ -40,11 +41,27 @@ function parseRecent(raw: string): Query[] {
   try {
     const list: unknown = JSON.parse(raw);
     if (!Array.isArray(list)) return [];
-    return list.filter(
-      (q): q is Query =>
-        typeof q?.origin === "string" && typeof q.destination === "string" && typeof q.month === "string" &&
-        Number.isInteger(q.minGap) && Number.isInteger(q.maxGap),
-    );
+    const out: Query[] = [];
+    for (const q of list) {
+      if (
+        typeof q?.origin === "string" &&
+        typeof q.destination === "string" &&
+        typeof q.month === "string" &&
+        (q.trip === undefined || q.trip === "round" || q.trip === "oneway") &&
+        Number.isInteger(q.minGap) &&
+        Number.isInteger(q.maxGap)
+      ) {
+        out.push({
+          origin: q.origin,
+          destination: q.destination,
+          month: q.month,
+          trip: q.trip ?? "round",
+          minGap: q.minGap,
+          maxGap: q.maxGap,
+        });
+      }
+    }
+    return out;
   } catch {
     return [];
   }
@@ -58,6 +75,7 @@ function pushRecent(q: Query) {
 }
 
 export default function Planner({ defaultMonth }: { defaultMonth: string }) {
+  const [trip, setTrip] = useState<TripMode>("round");
   const [origin, setOrigin] = useState("BLR");
   const [destination, setDestination] = useState("IXZ");
   const [month, setMonth] = useState(defaultMonth);
@@ -67,6 +85,7 @@ export default function Planner({ defaultMonth }: { defaultMonth: string }) {
   const [error, setError] = useState("");
   const [result, setResult] = useState<SearchResult | null>(null);
   const [selected, setSelected] = useState<TripWindow | null>(null);
+  const [selectedDay, setSelectedDay] = useState<DayFare | null>(null);
   const recentRaw = useSyncExternalStore(subscribe, readRecent, () => "[]");
   const recent = useMemo(() => parseRecent(recentRaw), [recentRaw]);
 
@@ -74,13 +93,26 @@ export default function Planner({ defaultMonth }: { defaultMonth: string }) {
     setLoading(true);
     setError("");
     setSelected(null);
+    setSelectedDay(null);
     try {
-      const qs = new URLSearchParams({ ...q, minGap: String(q.minGap), maxGap: String(q.maxGap) });
+      const qs = new URLSearchParams(
+        q.trip === "oneway"
+          ? { origin: q.origin, destination: q.destination, month: q.month, trip: q.trip }
+          : {
+              origin: q.origin,
+              destination: q.destination,
+              month: q.month,
+              trip: q.trip,
+              minGap: String(q.minGap),
+              maxGap: String(q.maxGap),
+            },
+      );
       const res = await fetch(`/api/search?${qs}`);
-      const body = await res.json();
+      const body: SearchResult & { error?: string } = await res.json();
       if (!res.ok) throw new Error(body.error ?? "Search failed");
       setResult(body);
       setSelected(body.windows[0] ?? null);
+      setSelectedDay(body.days[0] ?? null);
       pushRecent(q);
     } catch (err) {
       setResult(null);
@@ -92,15 +124,25 @@ export default function Planner({ defaultMonth }: { defaultMonth: string }) {
 
   function search(e: React.FormEvent) {
     e.preventDefault();
-    void run({ origin, destination, month, minGap, maxGap });
+    void run({
+      origin,
+      destination,
+      month,
+      trip,
+      minGap: trip === "oneway" ? 0 : minGap,
+      maxGap: trip === "oneway" ? 0 : maxGap,
+    });
   }
 
   function reuse(q: Query) {
     setOrigin(q.origin);
     setDestination(q.destination);
     setMonth(q.month);
-    setMinGap(q.minGap);
-    setMaxGap(q.maxGap);
+    setTrip(q.trip);
+    if (q.trip === "round") {
+      setMinGap(q.minGap);
+      setMaxGap(q.maxGap);
+    }
     void run(q);
   }
 
@@ -115,6 +157,31 @@ export default function Planner({ defaultMonth }: { defaultMonth: string }) {
       </p>
 
       <form onSubmit={search} className="mt-6 flex flex-wrap items-end gap-3">
+        <div role="group" aria-label="Trip type" className="grid gap-1 text-xs">
+          Trip
+          <div className="flex rounded-md border border-zinc-300 bg-white p-0.5 text-sm dark:border-zinc-700 dark:bg-zinc-900">
+            <button
+              type="button"
+              aria-pressed={trip === "round"}
+              onClick={() => setTrip("round")}
+              className={`rounded px-2.5 py-1.5 ${
+                trip === "round" ? "bg-sky-600 font-medium text-white" : "text-zinc-600 dark:text-zinc-400"
+              }`}
+            >
+              Round trip
+            </button>
+            <button
+              type="button"
+              aria-pressed={trip === "oneway"}
+              onClick={() => setTrip("oneway")}
+              className={`rounded px-2.5 py-1.5 ${
+                trip === "oneway" ? "bg-sky-600 font-medium text-white" : "text-zinc-600 dark:text-zinc-400"
+              }`}
+            >
+              One way
+            </button>
+          </div>
+        </div>
         <label className="grid gap-1 text-xs">
           From
           <select className={field} value={origin} onChange={(e) => setOrigin(e.target.value)}>
@@ -135,16 +202,20 @@ export default function Planner({ defaultMonth }: { defaultMonth: string }) {
           Month
           <input type="month" className={field} value={month} onChange={(e) => setMonth(e.target.value)} required />
         </label>
-        <label className="grid gap-1 text-xs">
-          Stay (days) min
-          <input type="number" min={1} max={30} className={`${field} w-20`} value={minGap}
-            onChange={(e) => setMinGap(Number(e.target.value))} />
-        </label>
-        <label className="grid gap-1 text-xs">
-          max
-          <input type="number" min={1} max={30} className={`${field} w-20`} value={maxGap}
-            onChange={(e) => setMaxGap(Number(e.target.value))} />
-        </label>
+        {trip === "round" && (
+          <>
+            <label className="grid gap-1 text-xs">
+              Stay (days) min
+              <input type="number" min={1} max={30} className={`${field} w-20`} value={minGap}
+                onChange={(e) => setMinGap(Number(e.target.value))} />
+            </label>
+            <label className="grid gap-1 text-xs">
+              max
+              <input type="number" min={1} max={30} className={`${field} w-20`} value={maxGap}
+                onChange={(e) => setMaxGap(Number(e.target.value))} />
+            </label>
+          </>
+        )}
         <button disabled={loading} className="rounded-md bg-sky-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-60">
           {loading ? "Searching..." : "Find best dates"}
         </button>
@@ -160,7 +231,8 @@ export default function Planner({ defaultMonth }: { defaultMonth: string }) {
               onClick={() => reuse(q)}
               className="rounded-full border border-zinc-300 px-2.5 py-1 dark:border-zinc-700"
             >
-              {q.origin}→{q.destination} {q.month} · {q.minGap === q.maxGap ? q.minGap : `${q.minGap}-${q.maxGap}`}d
+              {q.origin}→{q.destination} {q.month} ·{" "}
+              {q.trip === "oneway" ? "one way" : `${q.minGap === q.maxGap ? q.minGap : `${q.minGap}-${q.maxGap}`}d`}
             </button>
           ))}
         </div>
@@ -175,7 +247,43 @@ export default function Planner({ defaultMonth }: { defaultMonth: string }) {
               Demo data: these prices are simulated. Set TRAVELPAYOUTS_TOKEN in .env.local for real fares.
             </p>
           )}
-          {result.windows.length === 0 ? (
+          {result.trip === "oneway" ? (
+            result.days.length === 0 ? (
+              <p className="mt-6 text-zinc-600">No fares found for this month.</p>
+            ) : (
+              <div className="mt-6 grid gap-6 md:grid-cols-[1fr_1fr]">
+                <section>
+                  <h2 className="mb-2 text-sm font-medium uppercase tracking-wide text-zinc-500">Cheapest days</h2>
+                  <ol className="grid gap-2">
+                    {result.days.slice(0, 15).map((d) => {
+                      const active = selectedDay === d;
+                      return (
+                        <li key={d.date}>
+                          <button
+                            onClick={() => setSelectedDay(d)}
+                            aria-pressed={active}
+                            className={`flex w-full items-center justify-between rounded-lg border px-3 py-2 text-left text-sm ${
+                              active ? "border-sky-600 bg-sky-50 dark:bg-sky-950" : "border-zinc-200 dark:border-zinc-800"
+                            }`}
+                          >
+                            <span>
+                              {fmtDate(d.date)}
+                              {d.airline && <span className="ml-2 text-xs text-zinc-500">{d.airline}</span>}
+                            </span>
+                            <strong>{inr.format(d.price)}</strong>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ol>
+                </section>
+
+                <section>
+                  {selectedDay && <OneWayBooking day={selectedDay} origin={origin} destination={destination} />}
+                </section>
+              </div>
+            )
+          ) : result.windows.length === 0 ? (
             <p className="mt-6 text-zinc-600">No windows found. The provider has no fares for both legs.</p>
           ) : (
             <div className="mt-6 grid gap-6 md:grid-cols-[1fr_1fr]">
@@ -217,7 +325,7 @@ export default function Planner({ defaultMonth }: { defaultMonth: string }) {
           {result.calendar.length > 0 && (
             <section className="mt-8">
               <h2 className="mb-2 text-sm font-medium uppercase tracking-wide text-zinc-500">
-                Cheapest round trip by departure day
+                {result.trip === "oneway" ? "One-way fare by departure day" : "Cheapest round trip by departure day"}
               </h2>
               <div className="grid grid-cols-7 gap-1.5">
                 {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d) => (
@@ -240,7 +348,7 @@ export default function Planner({ defaultMonth }: { defaultMonth: string }) {
                   return (
                     <div
                       key={date}
-                      title={`${fmtDate(c.date)}: ${inr.format(c.total)} (${c.gap} days)`}
+                      title={`${fmtDate(c.date)}: ${inr.format(c.total)}${c.gap ? ` (${c.gap} days)` : ""}`}
                       className="rounded-md p-2 text-center text-xs text-zinc-900"
                       style={{ backgroundColor: `hsl(${130 - 130 * t} 70% 80%)` }}
                     >
@@ -255,6 +363,48 @@ export default function Planner({ defaultMonth }: { defaultMonth: string }) {
           <p className="mt-6 text-xs text-zinc-500">Source: {result.provider}. Fares are indicative; confirm on the booking site.</p>
         </>
       )}
+    </div>
+  );
+}
+
+function OneWayBooking({ day, origin, destination }: { day: DayFare; origin: string; destination: string }) {
+  const [best, ...others] = orderedSites(day.source);
+  const link = (s: typeof best) => s.url(origin, destination, day.date);
+  return (
+    <div className="grid gap-3">
+      <h2 className="text-sm font-medium uppercase tracking-wide text-zinc-500">Book this day</h2>
+      <a
+        href={link(best)}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="rounded-lg bg-sky-600 p-4 text-white"
+      >
+        <div className="text-xs opacity-80">Best price</div>
+        <div className="text-2xl font-semibold">{inr.format(day.price)}</div>
+        <div className="text-sm">on {best.label}</div>
+      </a>
+      <p className="text-xs text-zinc-500">
+        Outbound {inr.format(day.price)} via {SITES.find((s) => s.key === day.source)?.label ?? day.source}
+        {day.airline ? `, ${day.airline}` : ""}
+      </p>
+      <div>
+        <div className="mb-1 text-xs text-zinc-500">Compare on other sites</div>
+        <ul className="grid gap-1.5">
+          {others.map((s) => (
+            <li key={s.key}>
+              <a
+                href={link(s)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex justify-between rounded-md border border-zinc-200 px-3 py-2 text-sm dark:border-zinc-800"
+              >
+                {s.label}
+                <span className="text-xs text-zinc-500">{s.verified ? "check price" : "check price (link untested)"}</span>
+              </a>
+            </li>
+          ))}
+        </ul>
+      </div>
     </div>
   );
 }

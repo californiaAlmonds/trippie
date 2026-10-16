@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --test src/lib/windows.test.ts src/lib/scrape/parse.test.ts",
+    "test": "node --test src/lib/windows.test.ts src/lib/scrape/parse.test.ts src/lib/search.test.ts",
     "scrape": "bun scripts/scrape.ts"
   },
   "dependencies": {
