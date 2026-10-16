@@ -9,6 +9,7 @@ export async function GET(request: NextRequest) {
   const sp = request.nextUrl.searchParams;
   const params = parseSearch(sp);
   if ("error" in params) return Response.json({ error: params.error }, { status: 400 });
+  if (params.trip !== "round") return Response.json({ error: "History is only available for round trips" }, { status: 400 });
   const depart = sp.get("depart");
   const ret = sp.get("return");
   if (depart && ret) {
