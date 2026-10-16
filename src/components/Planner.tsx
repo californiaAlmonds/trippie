@@ -83,7 +83,7 @@ export default function Planner({ defaultMonth }: { defaultMonth: string }) {
   const [maxGap, setMaxGap] = useState(7);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [result, setResult] = useState<SearchResult | null>(null);
+  const [result, setResult] = useState<(SearchResult & { query: Query }) | null>(null);
   const [selected, setSelected] = useState<TripWindow | null>(null);
   const [selectedDay, setSelectedDay] = useState<DayFare | null>(null);
   const recentRaw = useSyncExternalStore(subscribe, readRecent, () => "[]");
@@ -110,7 +110,7 @@ export default function Planner({ defaultMonth }: { defaultMonth: string }) {
       const res = await fetch(`/api/search?${qs}`);
       const body: SearchResult & { error?: string } = await res.json();
       if (!res.ok) throw new Error(body.error ?? "Search failed");
-      setResult(body);
+      setResult({ ...body, query: q });
       setSelected(body.windows[0] ?? null);
       setSelectedDay(body.days[0] ?? null);
       pushRecent(q);
@@ -279,7 +279,7 @@ export default function Planner({ defaultMonth }: { defaultMonth: string }) {
                 </section>
 
                 <section>
-                  {selectedDay && <OneWayBooking day={selectedDay} origin={origin} destination={destination} />}
+                  {selectedDay && <OneWayBooking day={selectedDay} origin={result.query.origin} destination={result.query.destination} />}
                 </section>
               </div>
             )
@@ -314,9 +314,9 @@ export default function Planner({ defaultMonth }: { defaultMonth: string }) {
               </section>
 
               <section>
-                {selected && <Booking window={selected} origin={origin} destination={destination} />}
+                {selected && <Booking window={selected} origin={result.query.origin} destination={result.query.destination} />}
                 {selected && (
-                  <History key={`${selected.depart.date}-${selected.ret.date}`} window={selected} origin={origin} destination={destination} />
+                  <History key={`${selected.depart.date}-${selected.ret.date}`} window={selected} origin={result.query.origin} destination={result.query.destination} />
                 )}
               </section>
             </div>
