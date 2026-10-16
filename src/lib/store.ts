@@ -147,6 +147,34 @@ export async function getLatestFares(origin: string, destination: string, from: 
   }));
 }
 
+/** Most recent status='ok' fare per travel date, included only if its snapshot_day >= minSnapshotDay. */
+export async function getFreshFares(
+  origin: string,
+  destination: string,
+  from: string,
+  to: string,
+  minSnapshotDay: string,
+): Promise<DayFare[]> {
+  const rs = await (await db()).execute({
+    sql: `SELECT f.travel_date AS date, f.price, f.airline, f.stops FROM fares f
+          WHERE f.origin = ? AND f.destination = ? AND f.travel_date BETWEEN ? AND ?
+            AND f.status = 'ok' AND f.price IS NOT NULL
+            AND f.snapshot_day >= ?
+            AND f.snapshot_day = (SELECT MAX(snapshot_day) FROM fares
+                                  WHERE origin = f.origin AND destination = f.destination
+                                    AND travel_date = f.travel_date AND status = 'ok')
+          ORDER BY f.travel_date`,
+    args: [origin, destination, from, to, minSnapshotDay],
+  });
+  return rs.rows.map((r) => ({
+    date: String(r.date),
+    price: Number(r.price),
+    source: "google",
+    airline: r.airline ? String(r.airline) : undefined,
+    stops: r.stops == null ? undefined : Number(r.stops),
+  }));
+}
+
 export interface HistoryPoint {
   day: string;
   total: number;

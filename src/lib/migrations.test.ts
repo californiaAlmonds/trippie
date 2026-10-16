@@ -57,19 +57,108 @@ test("migrations apply on empty DB, are idempotent on re-run, and preserve exist
     const done = await doneDates("2026-10-16", "BLR", "IXZ");
     assert.ok(done.has("2027-02-10"));
 
-    // Verify auth tables exist from migration 2
+    // Verify auth and plan tables exist from migrations 2 and 3
     const tablesRs = await client.execute(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('users','sessions','email_tokens','rate_limits','schema_migrations') ORDER BY name",
+      "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('users','sessions','email_tokens','rate_limits','plans','recent_searches','alert_deliveries','schema_migrations') ORDER BY name",
     );
     assert.deepEqual(
       tablesRs.rows.map((r) => String(r.name)),
-      ["email_tokens", "rate_limits", "schema_migrations", "sessions", "users"],
+      [
+        "alert_deliveries",
+        "email_tokens",
+        "plans",
+        "rate_limits",
+        "recent_searches",
+        "schema_migrations",
+        "sessions",
+        "users",
+      ],
     );
 
     client.close();
   } finally {
     if (prevUrl === undefined) delete process.env.TURSO_DATABASE_URL;
     else process.env.TURSO_DATABASE_URL = prevUrl;
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // Windows SQLite file handle may release asynchronously on process exit
+    }
+  }
+});
+
+test("migration 3 applies cleanly on top of existing migration 1 and 2 data", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "trippie-mig3-"));
+  const dbPath = join(dir, "mig3.db").replace(/\\/g, "/");
+  const client = createClient({ url: `file:${dbPath}` });
+
+  try {
+    await client.execute("PRAGMA foreign_keys = ON");
+    await client.execute(`
+      CREATE TABLE schema_migrations (
+        id INTEGER PRIMARY KEY,
+        applied_at TEXT
+      )
+    `);
+    for (const m of MIGRATIONS.filter((x) => x.id <= 2)) {
+      await client.batch(
+        [
+          ...m.statements.map((sql) => ({ sql, args: [] })),
+          {
+            sql: "INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)",
+            args: [m.id, "2026-10-16T00:00:00.000Z"],
+          },
+        ],
+        "write",
+      );
+    }
+
+    // Seed pre-existing fares and user data before running migration 3
+    await client.execute({
+      sql: `INSERT INTO fares (snapshot_day, origin, destination, travel_date, price, airline, stops, status, provider, scraped_at)
+            VALUES ('2026-10-16', 'BLR', 'IXZ', '2027-02-15', 4999, 'Air India', 0, 'ok', 'google-flights', '2026-10-16T01:00:00.000Z')`,
+      args: [],
+    });
+    const userId = "00000000-0000-4000-8000-000000000099";
+    await client.execute({
+      sql: `INSERT INTO users (id, email, password_hash, created_at, verified_at)
+            VALUES (?, 'existing@example.com', 'scrypt$hash', '2026-10-16T00:00:00.000Z', '2026-10-16T00:05:00.000Z')`,
+      args: [userId],
+    });
+
+    // Apply migrate() which should apply only migration 3
+    await migrate(client);
+
+    const migRows = await client.execute("SELECT id FROM schema_migrations ORDER BY id");
+    assert.deepEqual(
+      migRows.rows.map((r) => Number(r.id)),
+      [1, 2, 3],
+    );
+
+    // Pre-existing rows remain intact and can be referenced by new migration 3 tables
+    const planId = "00000000-0000-4000-8000-000000000100";
+    await client.execute({
+      sql: `INSERT INTO plans (id, user_id, origin, destination, month, trip, min_gap, max_gap, alert_enabled, target_price, created_at)
+            VALUES (?, ?, 'BLR', 'IXZ', '2027-02', 'round', 4, 7, 1, 12000, '2026-10-16T02:00:00.000Z')`,
+      args: [planId, userId],
+    });
+    await client.execute({
+      sql: `INSERT INTO recent_searches (user_id, origin, destination, month, trip, min_gap, max_gap, created_at)
+            VALUES (?, 'BLR', 'IXZ', '2027-02', 'round', 4, 7, '2026-10-16T02:00:00.000Z')`,
+      args: [userId],
+    });
+    await client.execute({
+      sql: `INSERT INTO alert_deliveries (plan_id, day, status, created_at)
+            VALUES (?, '2026-10-16', 'claimed', '2026-10-16T02:00:00.000Z')`,
+      args: [planId],
+    });
+
+    const idxRs = await client.execute(
+      "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_plans_user_id'",
+    );
+    assert.equal(idxRs.rows.length, 1);
+  } finally {
+    client.close();
     try {
       rmSync(dir, { recursive: true, force: true });
     } catch {
