@@ -28,6 +28,15 @@ export const SITES: Site[] = [
     url: (o, d, dep, ret) => `https://www.kayak.co.in/flights/${o}-${d}/${dep}${ret ? `/${ret}` : ""}`,
   },
   {
+    key: "aviasales",
+    label: "Aviasales",
+    verified: false,
+    url: (o, d, dep, ret) => {
+      const ddmm = (x: IsoDate) => x.slice(8) + x.slice(5, 7);
+      return `https://www.aviasales.com/search/${o}${ddmm(dep)}${d}${ret ? ddmm(ret) : ""}1`;
+    },
+  },
+  {
     key: "makemytrip",
     label: "MakeMyTrip",
     verified: false,

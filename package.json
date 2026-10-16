@@ -7,9 +7,11 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --test src/lib/windows.test.ts"
+    "test": "node --test src/lib/windows.test.ts src/lib/scrape/parse.test.ts",
+    "scrape": "bun scripts/scrape.ts"
   },
   "dependencies": {
+    "@libsql/client": "^0.18.0",
     "next": "16.4.0",
     "react": "19.3.0",
     "react-dom": "19.3.0"
@@ -21,6 +23,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.4.0",
+    "playwright": "^1.64.0",
     "tailwindcss": "^4",
     "typescript": "^5"
   }

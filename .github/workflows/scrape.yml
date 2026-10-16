@@ -1,0 +1,38 @@
+name: scrape-fares
+
+on:
+  schedule:
+    - cron: "30 1 * * *" # 07:00 IST
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Max dates per leg (use 3 for a quick spike)"
+        required: false
+        default: ""
+
+concurrency: scrape-fares
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bunx playwright install --with-deps chromium
+      - name: Scrape
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          LIMIT: ${{ github.event.inputs.limit }}
+        run: |
+          if [ -n "$LIMIT" ] && ! [[ "$LIMIT" =~ ^[0-9]+$ ]]; then echo "limit must be a number"; exit 1; fi
+          bun scripts/scrape.ts ${LIMIT:+--limit "$LIMIT"}
+      - name: Upload screenshots of failed pages
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failed-pages
+          path: artifacts/
+          if-no-files-found: ignore

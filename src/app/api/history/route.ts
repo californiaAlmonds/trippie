@@ -13,9 +13,9 @@ export async function GET(request: NextRequest) {
   const ret = sp.get("return");
   if (depart && ret) {
     if (!isoDate.test(depart) || !isoDate.test(ret)) return Response.json({ error: "Invalid date" }, { status: 400 });
-    return Response.json(getWindowHistory(params.origin, params.destination, depart, ret));
+    return Response.json(await getWindowHistory(params.origin, params.destination, depart, ret));
   }
   return Response.json(
-    getBestWindowHistory(params.origin, params.destination, params.month, params.minGap, params.maxGap),
+    await getBestWindowHistory(params.origin, params.destination, params.month, params.minGap, params.maxGap),
   );
 }

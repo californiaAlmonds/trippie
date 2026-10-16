@@ -1,16 +1,61 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { AIRPORTS } from "@/lib/airports";
-import { orderedSites } from "@/lib/links";
+import { orderedSites, SITES } from "@/lib/links";
 import type { SearchResult } from "@/lib/search";
 import type { TripWindow } from "@/lib/types";
+import { addDays, monthBounds } from "@/lib/windows";
+
+function monthDays(month: string): string[] {
+  const { first, last } = monthBounds(month);
+  const days: string[] = [];
+  for (let d = first; d <= last; d = addDays(d, 1)) days.push(d);
+  return days;
+}
 
 const inr = new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 });
 const fmtDate = (d: string) =>
   new Date(`${d}T00:00:00Z`).toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short", timeZone: "UTC" });
 
 const field = "rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900";
+
+interface Query {
+  origin: string;
+  destination: string;
+  month: string;
+  minGap: number;
+  maxGap: number;
+}
+
+const RECENT_KEY = "trippie.recent";
+const listeners = new Set<() => void>();
+const subscribe = (cb: () => void) => {
+  listeners.add(cb);
+  return () => void listeners.delete(cb);
+};
+const readRecent = () => localStorage.getItem(RECENT_KEY) ?? "[]";
+
+function parseRecent(raw: string): Query[] {
+  try {
+    const list: unknown = JSON.parse(raw);
+    if (!Array.isArray(list)) return [];
+    return list.filter(
+      (q): q is Query =>
+        typeof q?.origin === "string" && typeof q.destination === "string" && typeof q.month === "string" &&
+        Number.isInteger(q.minGap) && Number.isInteger(q.maxGap),
+    );
+  } catch {
+    return [];
+  }
+}
+
+function pushRecent(q: Query) {
+  const same = (r: Query) => JSON.stringify(r) === JSON.stringify(q);
+  const next = [q, ...parseRecent(readRecent()).filter((r) => !same(r))].slice(0, 5);
+  localStorage.setItem(RECENT_KEY, JSON.stringify(next));
+  listeners.forEach((l) => l());
+}
 
 export default function Planner({ defaultMonth }: { defaultMonth: string }) {
   const [origin, setOrigin] = useState("BLR");
@@ -22,19 +67,21 @@ export default function Planner({ defaultMonth }: { defaultMonth: string }) {
   const [error, setError] = useState("");
   const [result, setResult] = useState<SearchResult | null>(null);
   const [selected, setSelected] = useState<TripWindow | null>(null);
+  const recentRaw = useSyncExternalStore(subscribe, readRecent, () => "[]");
+  const recent = useMemo(() => parseRecent(recentRaw), [recentRaw]);
 
-  async function search(e: React.FormEvent) {
-    e.preventDefault();
+  async function run(q: Query) {
     setLoading(true);
     setError("");
     setSelected(null);
     try {
-      const qs = new URLSearchParams({ origin, destination, month, minGap: String(minGap), maxGap: String(maxGap) });
+      const qs = new URLSearchParams({ ...q, minGap: String(q.minGap), maxGap: String(q.maxGap) });
       const res = await fetch(`/api/search?${qs}`);
       const body = await res.json();
       if (!res.ok) throw new Error(body.error ?? "Search failed");
       setResult(body);
       setSelected(body.windows[0] ?? null);
+      pushRecent(q);
     } catch (err) {
       setResult(null);
       setError(err instanceof Error ? err.message : "Search failed");
@@ -43,8 +90,22 @@ export default function Planner({ defaultMonth }: { defaultMonth: string }) {
     }
   }
 
-  const max = result ? Math.max(...result.calendar.map((c) => c.total)) : 0;
+  function search(e: React.FormEvent) {
+    e.preventDefault();
+    void run({ origin, destination, month, minGap, maxGap });
+  }
+
+  function reuse(q: Query) {
+    setOrigin(q.origin);
+    setDestination(q.destination);
+    setMonth(q.month);
+    setMinGap(q.minGap);
+    setMaxGap(q.maxGap);
+    void run(q);
+  }
+
   const min = result ? Math.min(...result.calendar.map((c) => c.total)) : 0;
+  const calendarByDate = useMemo(() => new Map(result?.calendar.map((c) => [c.date, c]) ?? []), [result]);
 
   return (
     <div className="mx-auto w-full max-w-5xl px-4 py-10">
@@ -89,6 +150,22 @@ export default function Planner({ defaultMonth }: { defaultMonth: string }) {
         </button>
       </form>
 
+      {recent.length > 0 && (
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+          <span className="text-zinc-500">Recent:</span>
+          {recent.map((q) => (
+            <button
+              key={JSON.stringify(q)}
+              type="button"
+              onClick={() => reuse(q)}
+              className="rounded-full border border-zinc-300 px-2.5 py-1 dark:border-zinc-700"
+            >
+              {q.origin}→{q.destination} {q.month} · {q.minGap === q.maxGap ? q.minGap : `${q.minGap}-${q.maxGap}`}d
+            </button>
+          ))}
+        </div>
+      )}
+
       {error && <p role="alert" className="mt-4 text-sm text-red-600">{error}</p>}
 
       {result && (
@@ -130,6 +207,9 @@ export default function Planner({ defaultMonth }: { defaultMonth: string }) {
 
               <section>
                 {selected && <Booking window={selected} origin={origin} destination={destination} />}
+                {selected && (
+                  <History key={`${selected.depart.date}-${selected.ret.date}`} window={selected} origin={origin} destination={destination} />
+                )}
               </section>
             </div>
           )}
@@ -140,11 +220,26 @@ export default function Planner({ defaultMonth }: { defaultMonth: string }) {
                 Cheapest round trip by departure day
               </h2>
               <div className="grid grid-cols-7 gap-1.5">
-                {result.calendar.map((c) => {
-                  const t = max === min ? 0 : (c.total - min) / (max - min);
+                {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d) => (
+                  <div key={d} className="text-center text-xs text-zinc-500">{d}</div>
+                ))}
+                {Array.from({ length: new Date(`${result.calendar[0].date.slice(0, 7)}-01T00:00:00Z`).getUTCDay() }, (_, i) => (
+                  <div key={`pad${i}`} />
+                ))}
+                {monthDays(result.calendar[0].date.slice(0, 7)).map((date) => {
+                  const c = calendarByDate.get(date);
+                  if (!c) {
+                    return (
+                      <div key={date} className="rounded-md bg-zinc-100 p-2 text-center text-xs text-zinc-400 dark:bg-zinc-900">
+                        {date.slice(8)}
+                      </div>
+                    );
+                  }
+                  // Colour by how far above the cheapest day (0% green to 25%+ red).
+                  const t = Math.min(1, (c.total - min) / (min * 0.25));
                   return (
                     <div
-                      key={c.date}
+                      key={date}
                       title={`${fmtDate(c.date)}: ${inr.format(c.total)} (${c.gap} days)`}
                       className="rounded-md p-2 text-center text-xs text-zinc-900"
                       style={{ backgroundColor: `hsl(${130 - 130 * t} 70% 80%)` }}
@@ -180,6 +275,14 @@ function Booking({ window: w, origin, destination }: { window: TripWindow; origi
         <div className="text-2xl font-semibold">{inr.format(w.total)}</div>
         <div className="text-sm">on {best.label}</div>
       </a>
+      <ul className="text-xs text-zinc-500">
+        {[w.depart, w.ret].map((leg, i) => (
+          <li key={i}>
+            {i === 0 ? "Outbound" : "Return"} {inr.format(leg.price)} via {SITES.find((s) => s.key === leg.source)?.label ?? leg.source}
+            {leg.airline ? `, ${leg.airline}` : ""}
+          </li>
+        ))}
+      </ul>
       <div>
         <div className="mb-1 text-xs text-zinc-500">Compare on other sites</div>
         <ul className="grid gap-1.5">
@@ -198,6 +301,64 @@ function Booking({ window: w, origin, destination }: { window: TripWindow; origi
           ))}
         </ul>
       </div>
+    </div>
+  );
+}
+
+interface Point {
+  day: string;
+  total: number;
+}
+
+function History({ window: w, origin, destination }: { window: TripWindow; origin: string; destination: string }) {
+  const [points, setPoints] = useState<Point[] | null>(null);
+
+  useEffect(() => {
+    const qs = new URLSearchParams({
+      origin,
+      destination,
+      month: w.depart.date.slice(0, 7),
+      minGap: String(w.gap),
+      maxGap: String(w.gap),
+      depart: w.depart.date,
+      return: w.ret.date,
+    });
+    let stale = false;
+    fetch(`/api/history?${qs}`)
+      .then((r) => (r.ok ? r.json() : []))
+      .then((p: Point[]) => !stale && setPoints(p))
+      .catch(() => !stale && setPoints([]));
+    return () => {
+      stale = true;
+    };
+  }, [w, origin, destination]);
+
+  if (!points) return null;
+  const W = 300;
+  const H = 70;
+  const totals = points.map((p) => p.total);
+  const lo = Math.min(...totals);
+  const hi = Math.max(...totals);
+  const x = (i: number) => (i / (points.length - 1)) * W;
+  const y = (t: number) => (hi === lo ? H / 2 : H - 4 - ((t - lo) / (hi - lo)) * (H - 8));
+
+  return (
+    <div className="mt-6">
+      <h2 className="mb-1 text-sm font-medium uppercase tracking-wide text-zinc-500">Price history</h2>
+      {points.length < 2 ? (
+        <p className="text-xs text-zinc-500">
+          {points.length === 0 ? "No snapshots yet." : "1 snapshot so far."} History builds up with each daily scrape.
+        </p>
+      ) : (
+        <>
+          <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img" aria-label="Round trip price over time">
+            <polyline fill="none" stroke="#0284c7" strokeWidth="2" points={points.map((p, i) => `${x(i)},${y(p.total)}`).join(" ")} />
+          </svg>
+          <p className="text-xs text-zinc-500">
+            {points[0].day} to {points.at(-1)!.day}: low {inr.format(lo)}, high {inr.format(hi)}
+          </p>
+        </>
+      )}
     </div>
   );
 }

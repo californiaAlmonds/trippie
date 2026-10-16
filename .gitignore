@@ -39,6 +39,7 @@ yarn-error.log*
 
 # local price snapshots
 /data/
+/artifacts/
 
 # playwright mcp logs
 /.playwright-mcp/
