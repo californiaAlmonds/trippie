@@ -34,17 +34,26 @@ export function isSessionExpired(expiresAtIso: string, nowMs = Date.now()): bool
   return ts <= nowMs;
 }
 
-/** Returns `__Host-trippie_session` when APP_ORIGIN starts with `https:`, else `trippie_session`. */
-export function sessionCookieName(appOrigin = process.env.APP_ORIGIN ?? ""): string {
-  return appOrigin.startsWith("https:") ? "__Host-trippie_session" : "trippie_session";
+/**
+ * Determines whether session cookies must have the `Secure` attribute:
+ * true iff `APP_ORIGIN` starts with `https` (case-insensitive).
+ */
+export function isSessionCookieSecure(appOrigin = process.env.APP_ORIGIN): boolean {
+  const trimmed = appOrigin?.trim().toLowerCase() ?? "";
+  return trimmed.startsWith("https://") || trimmed === "https:";
+}
+
+/** Returns `__Host-trippie_session` when `APP_ORIGIN` starts with https, else `trippie_session`. */
+export function sessionCookieName(appOrigin = process.env.APP_ORIGIN): string {
+  return isSessionCookieSecure(appOrigin) ? "__Host-trippie_session" : "trippie_session";
 }
 
 /** Builds cookie options for setting a session cookie. */
 export function buildSessionCookieOptions(
   expiresAt: Date,
-  appOrigin = process.env.APP_ORIGIN ?? "",
+  appOrigin = process.env.APP_ORIGIN,
 ): SessionCookieOptions {
-  const secure = appOrigin.startsWith("https:");
+  const secure = isSessionCookieSecure(appOrigin);
   return {
     httpOnly: true,
     sameSite: "lax",
@@ -56,8 +65,8 @@ export function buildSessionCookieOptions(
 }
 
 /** Builds cookie options for clearing a session cookie. */
-export function buildClearSessionCookieOptions(appOrigin = process.env.APP_ORIGIN ?? ""): SessionCookieOptions {
-  const secure = appOrigin.startsWith("https:");
+export function buildClearSessionCookieOptions(appOrigin = process.env.APP_ORIGIN): SessionCookieOptions {
+  const secure = isSessionCookieSecure(appOrigin);
   return {
     httpOnly: true,
     sameSite: "lax",

@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --test src/lib/windows.test.ts src/lib/scrape/parse.test.ts src/lib/search.test.ts src/lib/migrations.test.ts src/lib/auth/password.test.ts src/lib/auth/session-core.test.ts src/lib/auth/guard.test.ts",
+    "test": "node --test src/lib/windows.test.ts src/lib/scrape/parse.test.ts src/lib/search.test.ts src/lib/migrations.test.ts src/lib/auth/password.test.ts src/lib/auth/session-core.test.ts src/lib/auth/guard.test.ts src/lib/auth/rateLimit.test.ts src/lib/auth/tokens.test.ts",
     "scrape": "bun scripts/scrape.ts"
   },
   "dependencies": {

@@ -1,4 +1,4 @@
-import { authJson, checkOrigin, readJson } from "@/lib/auth/guard";
+import { authJson, authNoContent, checkOrigin, readJson } from "@/lib/auth/guard";
 import { destroySession } from "@/lib/auth/session";
 
 export async function POST(request: Request) {
@@ -10,7 +10,7 @@ export async function POST(request: Request) {
 
   try {
     await destroySession();
-    return authJson({ status: "ok" }, 200);
+    return authNoContent();
   } catch {
     return authJson({ error: "Could not sign out" }, 500);
   }

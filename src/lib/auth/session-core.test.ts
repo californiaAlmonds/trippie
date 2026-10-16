@@ -6,6 +6,7 @@ import {
   computeSessionExpiry,
   generateSessionToken,
   hashSessionToken,
+  isSessionCookieSecure,
   isSessionExpired,
   SESSION_TTL_MS,
   SESSION_TTL_SECONDS,
@@ -35,15 +36,13 @@ test("computeSessionExpiry and isSessionExpired enforce 30-day TTL", () => {
   assert.equal(isSessionExpired("not-a-date", now), true);
 });
 
-test("cookie name and options switch between __Host-trippie_session (https) and trippie_session (http)", () => {
+test("cookie Secure flag and __Host- prefix depend on whether APP_ORIGIN starts with https", () => {
   const exp = new Date(1_700_000_000_000);
 
+  // APP_ORIGIN starts with https -> secure = true, __Host-trippie_session
+  assert.equal(isSessionCookieSecure("https://trippie.example.com"), true);
   assert.equal(sessionCookieName("https://trippie.example.com"), "__Host-trippie_session");
-  assert.equal(sessionCookieName("http://localhost:3000"), "trippie_session");
-  assert.equal(sessionCookieName(""), "trippie_session");
-
-  const httpsOpts = buildSessionCookieOptions(exp, "https://trippie.example.com");
-  assert.deepEqual(httpsOpts, {
+  assert.deepEqual(buildSessionCookieOptions(exp, "https://trippie.example.com"), {
     httpOnly: true,
     sameSite: "lax",
     path: "/",
@@ -51,15 +50,14 @@ test("cookie name and options switch between __Host-trippie_session (https) and 
     expires: exp,
     maxAge: SESSION_TTL_SECONDS,
   });
+  assert.equal(buildClearSessionCookieOptions("https://trippie.example.com").secure, true);
+  assert.equal(buildClearSessionCookieOptions("https://trippie.example.com").maxAge, 0);
 
-  const httpOpts = buildSessionCookieOptions(exp, "http://localhost:3000");
-  assert.equal(httpOpts.secure, false);
-  assert.equal(httpOpts.httpOnly, true);
-  assert.equal(httpOpts.sameSite, "lax");
-  assert.equal(httpOpts.path, "/");
-
-  const clearOpts = buildClearSessionCookieOptions("https://trippie.example.com");
-  assert.equal(clearOpts.maxAge, 0);
-  assert.equal(clearOpts.secure, true);
-  assert.equal(clearOpts.expires.getTime(), 0);
+  // APP_ORIGIN http or unset -> secure = false, trippie_session
+  for (const origin of ["http://localhost:3111", "http://localhost:3198", "", "   ", undefined]) {
+    assert.equal(isSessionCookieSecure(origin), false);
+    assert.equal(sessionCookieName(origin), "trippie_session");
+    assert.equal(buildSessionCookieOptions(exp, origin).secure, false);
+    assert.equal(buildClearSessionCookieOptions(origin).secure, false);
+  }
 });

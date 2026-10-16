@@ -1,19 +1,16 @@
-import { getUserByEmail, validateEmail } from "@/lib/accounts";
+import { authJson, checkOrigin, clientKey, readJson } from "@/lib/auth/guard";
+import { dummyVerify, isLoginPasswordAcceptable, validateEmail, verifyPassword } from "@/lib/auth/password";
 import {
-  authJson,
-  checkOrigin,
-  clientKey,
+  clearRateLimit,
   emailRateLimitKey,
   ipRateLimitKey,
+  LOGIN_EMAIL_LIMIT,
+  LOGIN_IP_LIMIT,
+  LOGIN_WINDOW_SECONDS,
   rateLimit,
-  readJson,
-} from "@/lib/auth/guard";
-import { dummyVerify, verifyPassword } from "@/lib/auth/password";
+} from "@/lib/auth/rateLimit";
 import { createSession } from "@/lib/auth/session";
-
-const LOGIN_IP_LIMIT = 10;
-const LOGIN_EMAIL_LIMIT = 5;
-const LOGIN_WINDOW_SECONDS = 15 * 60; // 15 minutes
+import { getUserByEmail } from "@/lib/auth/users";
 
 export async function POST(request: Request) {
   const originErr = checkOrigin(request);
@@ -29,18 +26,21 @@ export async function POST(request: Request) {
   }
 
   const normalizedEmail = rawEmail.trim().toLowerCase();
-  if (normalizedEmail.length > 254) {
-    return authJson({ error: "Invalid email or password" }, 401);
-  }
 
-  // Rate-limit by IP (10/15min) and email-hash (5/15min) BEFORE password hashing
+  // Check rate limits BEFORE hashing (5 per 15 min per email AND 20 per 15 min per IP)
   const ip = clientKey(request);
+  const emailKey = emailRateLimitKey("login", normalizedEmail);
   const [ipRl, emailRl] = await Promise.all([
     rateLimit(ipRateLimitKey("login", ip), LOGIN_IP_LIMIT, LOGIN_WINDOW_SECONDS),
-    rateLimit(emailRateLimitKey("login", normalizedEmail), LOGIN_EMAIL_LIMIT, LOGIN_WINDOW_SECONDS),
+    rateLimit(emailKey, LOGIN_EMAIL_LIMIT, LOGIN_WINDOW_SECONDS),
   ]);
   if (!ipRl.allowed || !emailRl.allowed) {
     return authJson({ error: "Too many login attempts. Please try again later." }, 429);
+  }
+
+  if (!isLoginPasswordAcceptable(rawPassword)) {
+    await dummyVerify("invalid-length-password");
+    return authJson({ error: "Invalid email or password" }, 401);
   }
 
   const emailCheck = validateEmail(normalizedEmail);
@@ -61,12 +61,18 @@ export async function POST(request: Request) {
       return authJson({ error: "Invalid email or password" }, 401);
     }
 
-    if (!user.verified_at) {
-      return authJson({ error: "Verify your email first" }, 403);
-    }
-
+    await clearRateLimit(emailKey);
     await createSession(user.id);
-    return authJson({ user: { id: user.id, email: user.email } }, 200);
+    return authJson(
+      {
+        user: {
+          id: user.id,
+          email: user.email,
+          verified: Boolean(user.verified_at),
+        },
+      },
+      200,
+    );
   } catch {
     return authJson({ error: "Could not sign in" }, 500);
   }

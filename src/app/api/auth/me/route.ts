@@ -1,12 +1,21 @@
-import { deleteUserAccount, getUserById } from "@/lib/accounts";
-import { authJson, checkOrigin, readJson } from "@/lib/auth/guard";
+import { authJson, authNoContent, checkOrigin, clientKey, readJson } from "@/lib/auth/guard";
 import { verifyPassword } from "@/lib/auth/password";
-import { destroySession, getCurrentUser } from "@/lib/auth/session";
+import {
+  clearRateLimit,
+  emailRateLimitKey,
+  ipRateLimitKey,
+  LOGIN_EMAIL_LIMIT,
+  LOGIN_IP_LIMIT,
+  LOGIN_WINDOW_SECONDS,
+  rateLimit,
+} from "@/lib/auth/rateLimit";
+import { destroySession, getSessionUser } from "@/lib/auth/session";
+import { deleteUserAccount, getUserById } from "@/lib/auth/users";
 
 export async function GET() {
   try {
-    const user = await getCurrentUser();
-    return authJson({ user: user ? { id: user.id, email: user.email } : null }, 200);
+    const user = await getSessionUser();
+    return authJson({ user }, 200);
   } catch {
     return authJson({ user: null }, 200);
   }
@@ -19,14 +28,25 @@ export async function DELETE(request: Request) {
   const body = await readJson<{ password?: unknown }>(request);
   if (!body.ok) return body.response;
 
-  const sessionUser = await getCurrentUser();
+  const sessionUser = await getSessionUser();
   if (!sessionUser) {
     return authJson({ error: "Not authenticated" }, 401);
   }
 
   const password = body.data.password;
   if (typeof password !== "string" || !password) {
-    return authJson({ error: "Invalid password" }, 401);
+    return authJson({ error: "Password is required" }, 400);
+  }
+
+  // Rate limited like login (5 per 15 min per email AND 20 per 15 min per IP), checked before hashing
+  const ip = clientKey(request);
+  const emailKey = emailRateLimitKey("delete", sessionUser.email);
+  const [ipRl, emailRl] = await Promise.all([
+    rateLimit(ipRateLimitKey("delete", ip), LOGIN_IP_LIMIT, LOGIN_WINDOW_SECONDS),
+    rateLimit(emailKey, LOGIN_EMAIL_LIMIT, LOGIN_WINDOW_SECONDS),
+  ]);
+  if (!ipRl.allowed || !emailRl.allowed) {
+    return authJson({ error: "Too many attempts. Please try again later." }, 429);
   }
 
   try {
@@ -37,12 +57,13 @@ export async function DELETE(request: Request) {
 
     const valid = await verifyPassword(password, dbUser.password_hash);
     if (!valid) {
-      return authJson({ error: "Invalid password" }, 401);
+      return authJson({ error: "Invalid email or password" }, 401);
     }
 
+    await clearRateLimit(emailKey);
     await deleteUserAccount(sessionUser.id);
     await destroySession();
-    return authJson({ status: "ok" }, 200);
+    return authNoContent();
   } catch {
     return authJson({ error: "Could not delete account" }, 500);
   }

@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { type Client, createClient, type InStatement, type ResultSet, type TransactionMode } from "@libsql/client";
-import { runMigrations } from "./migrations.ts";
+import { migrate } from "./migrations.ts";
 import type { DayFare } from "./types.ts";
 import { addDays, computeWindows, monthBounds } from "./windows.ts";
 
@@ -46,19 +46,36 @@ async function retry<T>(fn: () => Promise<T>): Promise<T> {
 
 async function ensureReady(): Promise<{ client: Client; conn: Db }> {
   const url = process.env.TURSO_DATABASE_URL ?? "file:data/trippie.db";
-  if (!rawClient || !conn || activeUrl !== url) {
+  if (!rawClient || !conn || !ready || activeUrl !== url) {
     if (url === "file:data/trippie.db") mkdirSync("data", { recursive: true });
-    const client = createClient({ url, authToken: process.env.TURSO_AUTH_TOKEN });
+    const client = createClient({
+      url,
+      authToken: process.env.TURSO_AUTH_TOKEN,
+    });
     rawClient = client;
     activeUrl = url;
     conn = {
       execute: (stmt) => retry(() => client.execute(stmt)),
       batch: (stmts, mode) => retry(() => client.batch(stmts, mode)),
     };
-    ready = retry(() => runMigrations(client));
+    const initPromise = retry(() => migrate(client)).catch((err) => {
+      if (ready === initPromise) {
+        ready = undefined;
+        rawClient = undefined;
+        conn = undefined;
+        activeUrl = undefined;
+      }
+      try {
+        client.close();
+      } catch {
+        // Ignore close errors after failed init
+      }
+      throw err;
+    });
+    ready = initPromise;
   }
   await ready;
-  return { client: rawClient, conn };
+  return { client: rawClient!, conn: conn! };
 }
 
 /** Raw libSQL client (no retry wrapper) after migrations have been applied. */

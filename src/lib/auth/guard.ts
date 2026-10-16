@@ -1,6 +1,3 @@
-import { createHash } from "node:crypto";
-import { getClient } from "../store.ts";
-
 export const AUTH_HEADERS = {
   "Cache-Control": "no-store",
 } as const;
@@ -8,6 +5,11 @@ export const AUTH_HEADERS = {
 /** Builds a JSON Response with `Cache-Control: no-store`. */
 export function authJson(body: unknown, status = 200): Response {
   return Response.json(body, { status, headers: AUTH_HEADERS });
+}
+
+/** Builds a 204 No Content Response with `Cache-Control: no-store`. */
+export function authNoContent(): Response {
+  return new Response(null, { status: 204, headers: AUTH_HEADERS });
 }
 
 /** Resolves the expected origin: env APP_ORIGIN if set, otherwise `new URL(request.url).origin`. */
@@ -24,7 +26,7 @@ export function expectedOrigin(request: Request, appOrigin = process.env.APP_ORI
 }
 
 /**
- * Verifies the `Origin` header on mutating requests.
+ * Verifies the `Origin` header on POST/PATCH/DELETE requests.
  * Returns null if valid, or a 403 Response (`Cache-Control: no-store`) if missing or mismatched.
  */
 export function checkOrigin(request: Request, appOrigin = process.env.APP_ORIGIN): Response | null {
@@ -42,7 +44,7 @@ export function checkOrigin(request: Request, appOrigin = process.env.APP_ORIGIN
 export type ReadJsonResult<T> = { ok: true; data: T } | { ok: false; response: Response };
 
 /**
- * Requires `Content-Type: application/json`, reads the body up to `maxBytes` (rejecting larger with 413),
+ * Requires `Content-Type: application/json`, reads the body up to `maxBytes` (default 16 KB),
  * and safely parses a JSON object.
  */
 export async function readJson<T = Record<string, unknown>>(
@@ -52,12 +54,6 @@ export async function readJson<T = Record<string, unknown>>(
 ): Promise<ReadJsonResult<T>> {
   const rawCt = request.headers.get("content-type") ?? "";
   const mediaType = rawCt.split(";")[0]?.trim().toLowerCase() ?? "";
-  if (mediaType !== "application/json") {
-    return {
-      ok: false,
-      response: authJson({ error: "Content-Type must be application/json" }, 415),
-    };
-  }
 
   const contentLengthHeader = request.headers.get("content-length");
   if (contentLengthHeader !== null) {
@@ -115,6 +111,17 @@ export async function readJson<T = Record<string, unknown>>(
     }
   }
 
+  if (options?.allowEmpty && text.trim() === "" && (mediaType === "" || mediaType === "application/json")) {
+    return { ok: true, data: {} as T };
+  }
+
+  if (mediaType !== "application/json") {
+    return {
+      ok: false,
+      response: authJson({ error: "Content-Type must be application/json" }, 415),
+    };
+  }
+
   if (options?.allowEmpty && text.trim() === "") {
     return { ok: true, data: {} as T };
   }
@@ -136,65 +143,12 @@ export async function readJson<T = Record<string, unknown>>(
   }
 }
 
-/** Returns the first hop of `x-forwarded-for` if present, otherwise `"local"`. */
+/**
+ * Resolves the client rate-limit key: first hop of `x-forwarded-for` if present, else `'local'`.
+ */
 export function clientKey(request: Request): string {
   const xff = request.headers.get("x-forwarded-for");
   if (!xff) return "local";
-  const firstHop = xff.split(",")[0]?.trim();
-  return firstHop || "local";
-}
-
-/** Hashes a normalized email with SHA-256 so raw email addresses are never stored in `rate_limits`. */
-export function emailRateLimitKey(scope: string, normalizedEmail: string): string {
-  const digest = createHash("sha256").update(normalizedEmail.trim().toLowerCase(), "utf8").digest("hex");
-  return `${scope}:email:${digest}`;
-}
-
-/** Builds an IP rate-limit key for the given scope. */
-export function ipRateLimitKey(scope: string, ip: string): string {
-  return `${scope}:ip:${ip}`;
-}
-
-export interface RateLimitResult {
-  allowed: boolean;
-  count: number;
-  windowStart: number;
-}
-
-const ONE_DAY_SECONDS = 86400;
-
-/**
- * Enforces a fixed-window rate limit using an atomic UPSERT on `rate_limits`.
- * Opportunistically deletes rows with `window_start` older than 1 day.
- */
-export async function rateLimit(
-  key: string,
-  limit: number,
-  windowSeconds: number,
-  nowMs = Date.now(),
-): Promise<RateLimitResult> {
-  const nowSeconds = Math.floor(nowMs / 1000);
-  const windowStart = Math.floor(nowSeconds / windowSeconds) * windowSeconds;
-  const staleBefore = nowSeconds - ONE_DAY_SECONDS;
-
-  const client = await getClient();
-  await client.execute({
-    sql: "DELETE FROM rate_limits WHERE window_start < ?",
-    args: [staleBefore],
-  });
-
-  const rs = await client.execute({
-    sql: `INSERT INTO rate_limits (key, window_start, count)
-          VALUES (?, ?, 1)
-          ON CONFLICT(key, window_start) DO UPDATE SET count = rate_limits.count + 1
-          RETURNING count`,
-    args: [key, windowStart],
-  });
-
-  const count = Number(rs.rows[0]?.count ?? 1);
-  return {
-    allowed: count <= limit,
-    count,
-    windowStart,
-  };
+  const firstHop = xff.split(",")[0]?.trim() ?? "";
+  return firstHop.length > 0 ? firstHop : "local";
 }

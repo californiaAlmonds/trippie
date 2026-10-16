@@ -1,6 +1,6 @@
-import { consumeToken, markUserVerified } from "@/lib/accounts";
 import { authJson, checkOrigin, readJson } from "@/lib/auth/guard";
-import { createSession } from "@/lib/auth/session";
+import { consumeEmailToken } from "@/lib/auth/tokens";
+import { markUserVerified } from "@/lib/auth/users";
 
 export async function POST(request: Request) {
   const originErr = checkOrigin(request);
@@ -11,22 +11,21 @@ export async function POST(request: Request) {
 
   const rawToken = body.data.token;
   if (typeof rawToken !== "string" || !rawToken.trim()) {
-    return authJson({ error: "Invalid or expired verification token" }, 400);
+    return authJson({ error: "Invalid or expired link" }, 400);
   }
 
   try {
-    const userId = await consumeToken(rawToken.trim(), "verify");
+    const userId = await consumeEmailToken(rawToken.trim(), "verify");
     if (!userId) {
-      return authJson({ error: "Invalid or expired verification token" }, 400);
+      return authJson({ error: "Invalid or expired link" }, 400);
     }
 
-    const user = await markUserVerified(userId);
-    if (!user) {
-      return authJson({ error: "Invalid or expired verification token" }, 400);
+    const updated = await markUserVerified(userId);
+    if (!updated) {
+      return authJson({ error: "Invalid or expired link" }, 400);
     }
 
-    await createSession(user.id);
-    return authJson({ user }, 200);
+    return authJson({ ok: true }, 200);
   } catch {
     return authJson({ error: "Could not verify email" }, 500);
   }

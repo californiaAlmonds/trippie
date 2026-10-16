@@ -11,13 +11,20 @@ import {
 } from "./session-core.ts";
 
 export interface SessionUser {
-  id: number;
+  id: string;
   email: string;
   verified: boolean;
 }
 
-/** Issues a new 30-day session for `userId`, stores sha256(token) in DB, and sets the session cookie. */
-export async function createSession(userId: number): Promise<string> {
+/**
+ * Issues a fresh 30-day session for `userId` (rotating any existing session cookie),
+ * stores sha256(token) in DB, and sets the session cookie.
+ */
+export async function createSession(userId: string): Promise<string> {
+  const cookieStore = await cookies();
+  const cookieName = sessionCookieName();
+  const existingToken = cookieStore.get(cookieName)?.value;
+
   const token = generateSessionToken();
   const tokenHash = hashSessionToken(token);
   const now = new Date();
@@ -25,28 +32,35 @@ export async function createSession(userId: number): Promise<string> {
   const expiresAt = computeSessionExpiry(now.getTime());
   const expiresAtIso = expiresAt.toISOString();
 
-  const client = await getClient();
-  await client.batch(
-    [
-      {
-        sql: "DELETE FROM sessions WHERE expires_at <= ?",
-        args: [nowIso],
-      },
-      {
-        sql: "INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
-        args: [tokenHash, userId, nowIso, expiresAtIso],
-      },
-    ],
-    "write",
-  );
+  const statements: Array<{ sql: string; args: Array<string> }> = [
+    {
+      sql: "DELETE FROM sessions WHERE expires_at <= ?",
+      args: [nowIso],
+    },
+  ];
+  if (existingToken && existingToken.length <= 256) {
+    statements.push({
+      sql: "DELETE FROM sessions WHERE token_hash = ?",
+      args: [hashSessionToken(existingToken)],
+    });
+  }
+  statements.push({
+    sql: "INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
+    args: [tokenHash, userId, nowIso, expiresAtIso],
+  });
 
-  const cookieStore = await cookies();
-  cookieStore.set(sessionCookieName(), token, buildSessionCookieOptions(expiresAt));
+  const client = await getClient();
+  await client.batch(statements, "write");
+
+  cookieStore.set(cookieName, token, buildSessionCookieOptions(expiresAt));
   return token;
 }
 
-/** Looks up the current session user. Enforces 30-day expiry and verified account; opportunistically deletes expired rows. */
-export async function getCurrentUser(): Promise<SessionUser | null> {
+/**
+ * Looks up the current session user (`{ id, email, verified }` or `null`).
+ * Enforces 30-day expiry on every lookup and deletes expired sessions.
+ */
+export async function getSessionUser(): Promise<SessionUser | null> {
   const cookieStore = await cookies();
   const rawToken = cookieStore.get(sessionCookieName())?.value;
   if (!rawToken || rawToken.length > 256) return null;
@@ -56,7 +70,6 @@ export async function getCurrentUser(): Promise<SessionUser | null> {
   const nowIso = new Date(nowMs).toISOString();
 
   const client = await getClient();
-  // Opportunistically clean up expired sessions
   await client.execute({
     sql: "DELETE FROM sessions WHERE expires_at <= ?",
     args: [nowIso],
@@ -79,12 +92,11 @@ export async function getCurrentUser(): Promise<SessionUser | null> {
     });
     return null;
   }
-  if (!row.verified_at) return null;
 
   return {
-    id: Number(row.id),
+    id: String(row.id),
     email: String(row.email),
-    verified: true,
+    verified: Boolean(row.verified_at),
   };
 }
 
@@ -107,7 +119,7 @@ export async function destroySession(): Promise<void> {
 }
 
 /** Deletes all sessions belonging to `userId`. */
-export async function destroyAllSessions(userId: number): Promise<void> {
+export async function destroyAllSessions(userId: string): Promise<void> {
   const client = await getClient();
   await client.execute({
     sql: "DELETE FROM sessions WHERE user_id = ?",

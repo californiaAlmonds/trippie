@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
-import { dummyVerify, hashPassword, validatePasswordPolicy, verifyPassword } from "./password.ts";
+import {
+  dummyVerify,
+  hashPassword,
+  isLoginPasswordAcceptable,
+  validateEmail,
+  validatePasswordPolicy,
+  verifyPassword,
+} from "./password.ts";
 
 test("password policy enforces 15..128 chars, allows spaces/symbols, and rejects NUL", () => {
   assert.equal(validatePasswordPolicy("short password").ok, false); // 14 chars
@@ -11,6 +18,25 @@ test("password policy enforces 15..128 chars, allows spaces/symbols, and rejects
   assert.equal(validatePasswordPolicy("x".repeat(129)).ok, false);
   assert.equal(validatePasswordPolicy("valid-length-with-\0-nul-byte").ok, false);
   assert.equal(validatePasswordPolicy(null).ok, false);
+});
+
+test("validateEmail trims, lowercases, enforces <=254 chars and sanity regex", () => {
+  assert.deepEqual(validateEmail("  Alice@Example.COM "), { ok: true, email: "alice@example.com" });
+  assert.equal(validateEmail("bad-email").ok, false);
+  assert.equal(validateEmail("a..b@example.com").ok, false);
+  assert.equal(validateEmail(`${"a".repeat(250)}@example.com`).ok, false);
+  assert.equal(validateEmail(null).ok, false);
+});
+
+test("isLoginPasswordAcceptable rejects oversized (>128) and NUL-containing passwords identically", () => {
+  assert.equal(isLoginPasswordAcceptable("short"), true);
+  assert.equal(isLoginPasswordAcceptable("x".repeat(128)), true);
+  assert.equal(isLoginPasswordAcceptable("x".repeat(129)), false);
+  assert.equal(isLoginPasswordAcceptable("has-\0-nul"), false);
+  assert.equal(isLoginPasswordAcceptable(""), false);
+  assert.equal(isLoginPasswordAcceptable(null), false);
+  assert.equal(isLoginPasswordAcceptable(undefined), false);
+  assert.equal(isLoginPasswordAcceptable(12345), false);
 });
 
 test("hashPassword and verifyPassword round trip and reject wrong passwords", async () => {
@@ -23,12 +49,15 @@ test("hashPassword and verifyPassword round trip and reject wrong passwords", as
   assert.equal(await verifyPassword("correct horse battery staple!\0", stored), false);
 });
 
-test("verifyPassword rejects malformed stored hashes and absurd scrypt parameters", async () => {
+test("verifyPassword rejects malformed stored hashes and unreasonable scrypt parameters without throwing", async () => {
   const validSalt = randomBytes(16).toString("base64");
   const validHash = randomBytes(64).toString("base64");
 
-  const malformed = [
+  const malformed: unknown[] = [
     "",
+    null,
+    undefined,
+    12345,
     "bcrypt$32768$8$1$" + validSalt + "$" + validHash,
     "scrypt$32768$8$1$" + validSalt,
     "scrypt$30000$8$1$" + validSalt + "$" + validHash, // N not power of 2
@@ -42,7 +71,7 @@ test("verifyPassword rejects malformed stored hashes and absurd scrypt parameter
   ];
 
   for (const h of malformed) {
-    assert.equal(await verifyPassword("correct horse battery staple!", h), false, `Expected false for: ${h}`);
+    assert.equal(await verifyPassword("correct horse battery staple!", h), false, `Expected false for: ${String(h)}`);
   }
 });
 
@@ -56,4 +85,5 @@ test("dummyVerify completes without error and semaphore handles >2 concurrent ha
   assert.equal(typeof results[0], "string");
   assert.equal(typeof results[1], "string");
   assert.equal(typeof results[2], "string");
+  assert.equal(results[3], false);
 });

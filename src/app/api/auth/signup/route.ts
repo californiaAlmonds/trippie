@@ -1,11 +1,10 @@
-import { createEmailToken, createUser, validateEmail } from "@/lib/accounts";
-import { authJson, checkOrigin, clientKey, expectedOrigin, ipRateLimitKey, rateLimit, readJson } from "@/lib/auth/guard";
-import { hashPassword, validatePasswordPolicy } from "@/lib/auth/password";
+import { authJson, checkOrigin, clientKey, readJson } from "@/lib/auth/guard";
+import { hashPassword, validateEmail, validatePasswordPolicy } from "@/lib/auth/password";
+import { ipRateLimitKey, rateLimit, SIGNUP_IP_LIMIT, SIGNUP_WINDOW_SECONDS } from "@/lib/auth/rateLimit";
 import { createSession } from "@/lib/auth/session";
+import { buildVerifyLink, createEmailToken } from "@/lib/auth/tokens";
+import { createUser } from "@/lib/auth/users";
 import { buildVerifyEmail, mailConfigured, sendMail } from "@/lib/mailer";
-
-const SIGNUP_IP_LIMIT = 5;
-const SIGNUP_WINDOW_SECONDS = 3600; // 1 hour
 
 export async function POST(request: Request) {
   const originErr = checkOrigin(request);
@@ -25,10 +24,9 @@ export async function POST(request: Request) {
   }
   const password = body.data.password as string;
 
-  // Rate-limit per IP (5/hour) BEFORE password hashing
   const ip = clientKey(request);
-  const rl = await rateLimit(ipRateLimitKey("signup", ip), SIGNUP_IP_LIMIT, SIGNUP_WINDOW_SECONDS);
-  if (!rl.allowed) {
+  const ipRl = await rateLimit(ipRateLimitKey("signup", ip), SIGNUP_IP_LIMIT, SIGNUP_WINDOW_SECONDS);
+  if (!ipRl.allowed) {
     return authJson({ error: "Too many signup attempts. Please try again later." }, 429);
   }
 
@@ -36,37 +34,27 @@ export async function POST(request: Request) {
   const allowUnverifiedDev = process.env.ALLOW_UNVERIFIED_DEV === "1";
   const isProduction = process.env.NODE_ENV === "production";
 
-  // In production without SMTP and without explicit local opt-in, reject BEFORE creating the user
   if (!smtpReady && !allowUnverifiedDev && isProduction) {
-    return authJson({ error: "Email is not configured on this server" }, 503);
+    return authJson({ error: "Email is not configured; sign-up is disabled" }, 503);
   }
 
   try {
     const passwordHash = await hashPassword(password);
-    const autoVerify = !smtpReady && allowUnverifiedDev;
-    const created = await createUser(emailRes.email, passwordHash, { verified: autoVerify });
+    const created = await createUser(emailRes.email, passwordHash, { verified: allowUnverifiedDev });
     if (!created.ok) {
       return authJson({ error: "Could not create account" }, 409);
     }
 
-    if (autoVerify) {
-      await createSession(created.user.id);
-      return authJson({ status: "signed_in", user: created.user }, 201);
-    }
+    await createSession(created.user.id);
 
-    const token = await createEmailToken(created.user.id, "verify");
-    const baseOrigin = expectedOrigin(request);
-    const verifyUrl = `${baseOrigin}/verify?token=${encodeURIComponent(token)}`;
-
-    if (smtpReady) {
+    if (!allowUnverifiedDev) {
+      const token = await createEmailToken(created.user.id, "verify");
+      const verifyUrl = buildVerifyLink(token);
       await sendMail(buildVerifyEmail(created.user.email, verifyUrl));
-      return authJson({ status: "verification_sent" }, 201);
     }
 
-    // Non-production without SMTP and without ALLOW_UNVERIFIED_DEV=1: log only the link, no email address
-    console.warn(`dev verification link: ${verifyUrl}`);
-    return authJson({ status: "verification_sent" }, 201);
+    return authJson({ user: created.user }, 201);
   } catch {
-    return authJson({ error: "Could not complete signup" }, 500);
+    return authJson({ error: "Could not create account" }, 500);
   }
 }
