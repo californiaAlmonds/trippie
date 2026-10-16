@@ -4,9 +4,14 @@ import type { Query } from "./recentStore";
 interface RecentSearchesProps {
   recent: Query[];
   onSelect: (q: Query) => void;
+  onClear?: () => void;
 }
 
-export default function RecentSearches({ recent, onSelect }: RecentSearchesProps) {
+export default function RecentSearches({
+  recent,
+  onSelect,
+  onClear,
+}: RecentSearchesProps) {
   if (recent.length === 0) return null;
 
   return (
@@ -33,6 +38,16 @@ export default function RecentSearches({ recent, onSelect }: RecentSearchesProps
           </span>
         </button>
       ))}
+      {onClear && (
+        <button
+          type="button"
+          onClick={onClear}
+          className="focus-ring rounded-full px-2.5 py-1 text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer"
+        >
+          Clear
+        </button>
+      )}
     </div>
   );
 }
+

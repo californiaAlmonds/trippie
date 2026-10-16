@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { DayFare } from "@/lib/types";
 import { fmtDate, formatDeltaFromBest, inr } from "./format";
 
@@ -5,6 +6,7 @@ interface DayListProps {
   days: DayFare[];
   selectedDay: DayFare | null;
   onSelect: (d: DayFare) => void;
+  headerAction?: ReactNode;
 }
 
 const deltaToneStyles = {
@@ -20,19 +22,23 @@ export default function DayList({
   days,
   selectedDay,
   onSelect,
+  headerAction,
 }: DayListProps) {
   const topDays = days.slice(0, 15);
   const bestPrice = topDays.length > 0 ? topDays[0].price : 0;
 
   return (
     <section className="glass p-5 sm:p-6">
-      <div className="mb-3.5 flex items-center justify-between gap-2">
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-          Cheapest days
-        </h2>
-        <span className="text-xs text-[var(--text-muted)] tabular-nums">
-          Top {topDays.length}
-        </span>
+      <div className="mb-3.5 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <h2 className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+            Cheapest days
+          </h2>
+          <span className="text-xs text-[var(--text-muted)] tabular-nums">
+            Top {topDays.length}
+          </span>
+        </div>
+        {headerAction}
       </div>
 
       <ol className="grid gap-2">
