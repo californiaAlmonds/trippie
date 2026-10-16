@@ -126,13 +126,13 @@ test("migration 3 applies cleanly on top of existing migration 1 and 2 data", as
       args: [userId],
     });
 
-    // Apply migrate() which should apply only migration 3
+    // Apply migrate() which should apply remaining migrations (3 and 4)
     await migrate(client);
 
     const migRows = await client.execute("SELECT id FROM schema_migrations ORDER BY id");
     assert.deepEqual(
       migRows.rows.map((r) => Number(r.id)),
-      [1, 2, 3],
+      [1, 2, 3, 4],
     );
 
     // Pre-existing rows remain intact and can be referenced by new migration 3 tables
@@ -157,6 +157,72 @@ test("migration 3 applies cleanly on top of existing migration 1 and 2 data", as
       "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_plans_user_id'",
     );
     assert.equal(idxRs.rows.length, 1);
+  } finally {
+    client.close();
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // Windows SQLite file handle may release asynchronously on process exit
+    }
+  }
+});
+
+test("migration 4 applies cleanly on top of existing migration 1..3 data and is safe on re-run", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "trippie-mig4-"));
+  const dbPath = join(dir, "mig4.db").replace(/\\/g, "/");
+  const client = createClient({ url: `file:${dbPath}` });
+
+  try {
+    await client.execute("PRAGMA foreign_keys = ON");
+    await client.execute(`
+      CREATE TABLE schema_migrations (
+        id INTEGER PRIMARY KEY,
+        applied_at TEXT
+      )
+    `);
+    for (const m of MIGRATIONS.filter((x) => x.id <= 3)) {
+      await client.batch(
+        [
+          ...m.statements.map((sql) => ({ sql, args: [] })),
+          {
+            sql: "INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)",
+            args: [m.id, "2026-10-16T00:00:00.000Z"],
+          },
+        ],
+        "write",
+      );
+    }
+
+    const userId = "00000000-0000-4000-8000-000000000099";
+    const planId = "00000000-0000-4000-8000-000000000100";
+    await client.execute({
+      sql: `INSERT INTO users (id, email, password_hash, created_at, verified_at)
+            VALUES (?, 'mig4@example.com', 'scrypt$hash', '2026-10-16T00:00:00.000Z', '2026-10-16T00:05:00.000Z')`,
+      args: [userId],
+    });
+    await client.execute({
+      sql: `INSERT INTO plans (id, user_id, origin, destination, month, trip, min_gap, max_gap, alert_enabled, target_price, created_at)
+            VALUES (?, ?, 'BLR', 'IXZ', '2027-02', 'round', 4, 7, 1, 12000, '2026-10-16T02:00:00.000Z')`,
+      args: [planId, userId],
+    });
+
+    // Apply migrate() twice to verify migration 4 applies and re-running is safe via schema_migrations
+    await migrate(client);
+    await migrate(client);
+
+    const migRows = await client.execute("SELECT id FROM schema_migrations ORDER BY id");
+    assert.deepEqual(
+      migRows.rows.map((r) => Number(r.id)),
+      [1, 2, 3, 4],
+    );
+
+    const planRs = await client.execute({
+      sql: "SELECT revision, alert_enabled, target_price FROM plans WHERE id = ?",
+      args: [planId],
+    });
+    assert.equal(Number(planRs.rows[0]?.revision), 0);
+    assert.equal(Number(planRs.rows[0]?.alert_enabled), 1);
+    assert.equal(Number(planRs.rows[0]?.target_price), 12000);
   } finally {
     client.close();
     try {

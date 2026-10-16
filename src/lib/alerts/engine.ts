@@ -22,11 +22,17 @@ export interface AlertPlanRow {
   maxGap: number;
   targetPrice: number | null;
   lastAlertPrice: number | null;
+  revision: number;
 }
 
 export type AlertBestOptions =
   | { trip: "round"; bestPrice: number; windows: TripWindow[] }
   | { trip: "oneway"; bestPrice: number; days: DayFare[] };
+
+export interface AlertRunHooks {
+  beforeClaim?(plan: AlertPlanRow): Promise<void> | void;
+  beforeComplete?(plan: AlertPlanRow): Promise<void> | void;
+}
 
 export interface AlertRunOptions {
   now?: Date;
@@ -35,6 +41,7 @@ export interface AlertRunOptions {
   appOrigin?: string;
   maxEmails?: number;
   dryRun?: boolean;
+  hooks?: AlertRunHooks;
 }
 
 export interface AlertRunSummary {
@@ -47,10 +54,6 @@ export interface AlertRunSummary {
 }
 
 const SQLITE_BUSY_RE = /SQLITE_BUSY|database is locked/i;
-
-function isUniqueConstraintError(err: unknown): boolean {
-  return /UNIQUE constraint failed|SQLITE_CONSTRAINT/i.test(String(err));
-}
 
 async function withBusyRetry<T>(fn: () => Promise<T>): Promise<T> {
   for (let attempt = 0; ; attempt++) {
@@ -211,7 +214,7 @@ export async function runAlerts(options?: AlertRunOptions): Promise<AlertRunSumm
   const rs = await client.execute({
     sql: `SELECT p.id, p.user_id, p.origin, p.destination, p.month, p.trip,
                  p.min_gap, p.max_gap, p.alert_enabled, p.target_price,
-                 p.last_alert_price, p.last_alert_at, p.created_at,
+                 p.last_alert_price, p.last_alert_at, p.revision, p.created_at,
                  u.email, u.verified_at
           FROM plans p
           JOIN users u ON u.id = p.user_id
@@ -251,11 +254,21 @@ export async function runAlerts(options?: AlertRunOptions): Promise<AlertRunSumm
       maxGap: Number(row.max_gap),
       targetPrice: row.target_price == null ? null : Number(row.target_price),
       lastAlertPrice: row.last_alert_price == null ? null : Number(row.last_alert_price),
+      revision: Number(row.revision ?? 0),
     };
 
     const { first, last } = monthBounds(plan.month);
-    const expectedOutDates = diffDays(first, last) + 1;
-    const outbound = await getFreshFares(plan.origin, plan.destination, first, last, minSnapshotDay);
+    const outFrom = first >= today ? first : today;
+    if (outFrom > last) {
+      skip("expired");
+      continue;
+    }
+    const expectedOutDates = diffDays(outFrom, last) + 1;
+    if (expectedOutDates <= 0) {
+      skip("expired");
+      continue;
+    }
+    const outbound = await getFreshFares(plan.origin, plan.destination, outFrom, last, minSnapshotDay);
     if (outbound.length * 2 < expectedOutDates) {
       skip("insufficient data");
       continue;
@@ -270,7 +283,7 @@ export async function runAlerts(options?: AlertRunOptions): Promise<AlertRunSumm
       }
       best = { trip: "oneway", bestPrice: days[0].price, days: days.slice(0, 3) };
     } else {
-      const inFrom = addDays(first, plan.minGap);
+      const inFrom = addDays(outFrom, plan.minGap);
       const inTo = addDays(last, plan.maxGap);
       const expectedInDates = diffDays(inFrom, inTo) + 1;
       const inbound = await getFreshFares(plan.destination, plan.origin, inFrom, inTo, minSnapshotDay);
@@ -306,41 +319,26 @@ export async function runAlerts(options?: AlertRunOptions): Promise<AlertRunSumm
       continue;
     }
 
-    // Re-check right before claiming that the plan still has alert_enabled = 1 and user verified
-    const recheckRs = await withBusyRetry(() =>
+    await options?.hooks?.beforeClaim?.(plan);
+
+    const claimRs = await withBusyRetry(() =>
       client.execute({
-        sql: `SELECT p.alert_enabled, u.verified_at
-              FROM plans p
-              JOIN users u ON u.id = p.user_id
-              WHERE p.id = ?`,
-        args: [plan.id],
+        sql: `INSERT OR IGNORE INTO alert_deliveries(plan_id, day, status, created_at)
+              SELECT ?, ?, 'claimed', ?
+              WHERE EXISTS (
+                SELECT 1 FROM plans p
+                JOIN users u ON u.id = p.user_id
+                WHERE p.id = ?
+                  AND p.alert_enabled = 1
+                  AND p.revision = ?
+                  AND u.verified_at IS NOT NULL
+                  AND (p.target_price IS NULL OR p.target_price >= ?)
+              )`,
+        args: [plan.id, today, nowIso, plan.id, plan.revision, B],
       }),
     );
-    const recheck = recheckRs.rows[0];
-    if (!recheck || Number(recheck.alert_enabled) !== 1 || recheck.verified_at == null) {
-      skip("disabled");
-      continue;
-    }
 
-    // Claim in alert_deliveries with status = 'claimed'
-    let claimed = false;
-    try {
-      await withBusyRetry(() =>
-        client.execute({
-          sql: "INSERT INTO alert_deliveries (plan_id, day, status, created_at) VALUES (?, ?, 'claimed', ?)",
-          args: [plan.id, today, nowIso],
-        }),
-      );
-      claimed = true;
-    } catch (err) {
-      if (isUniqueConstraintError(err)) {
-        skip("already claimed");
-        continue;
-      }
-      throw err;
-    }
-
-    if (!claimed) {
+    if ((claimRs.rowsAffected ?? 0) === 0) {
       skip("already claimed");
       continue;
     }
@@ -361,6 +359,8 @@ export async function runAlerts(options?: AlertRunOptions): Promise<AlertRunSumm
       continue;
     }
 
+    await options?.hooks?.beforeComplete?.(plan);
+
     await withBusyRetry(() =>
       client.batch(
         [
@@ -369,8 +369,8 @@ export async function runAlerts(options?: AlertRunOptions): Promise<AlertRunSumm
             args: [plan.id, today],
           },
           {
-            sql: "UPDATE plans SET last_alert_price = ?, last_alert_at = ? WHERE id = ?",
-            args: [B, nowIso, plan.id],
+            sql: "UPDATE plans SET last_alert_price = ?, last_alert_at = ? WHERE id = ? AND revision = ?",
+            args: [B, nowIso, plan.id, plan.revision],
           },
         ],
         "write",

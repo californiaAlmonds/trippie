@@ -306,3 +306,129 @@ test("recent searches upsert, cap-10 pruning, and clear; account deletion remove
     }
   }
 });
+
+test("partial PATCH never clobbers unspecified fields, increments revision on every PATCH, and resets last_alert_price/last_alert_at", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "trippie-plans-patch-"));
+  const dbPath = join(dir, "patch.db").replace(/\\/g, "/");
+  const prevUrl = process.env.TURSO_DATABASE_URL;
+  process.env.TURSO_DATABASE_URL = `file:${dbPath}`;
+
+  try {
+    const client = await getClient();
+    const userRes = await createUser("patcher@example.com", "scrypt$hash", { verified: true });
+    assert.ok(userRes.ok);
+    const user = userRes.user;
+
+    const created = await createPlan(user.id, user.verified, {
+      origin: "BLR",
+      destination: "IXZ",
+      month: "2027-02",
+      trip: "round",
+      minGap: 4,
+      maxGap: 7,
+      alertEnabled: true,
+      targetPrice: 15000,
+    });
+    assert.ok(created.ok);
+    const planId = created.plan.id;
+
+    // Initial revision is 0
+    const rev0 = await client.execute({
+      sql: "SELECT revision, alert_enabled, target_price FROM plans WHERE id = ?",
+      args: [planId],
+    });
+    assert.equal(Number(rev0.rows[0]?.revision), 0);
+    assert.equal(Number(rev0.rows[0]?.alert_enabled), 1);
+    assert.equal(Number(rev0.rows[0]?.target_price), 15000);
+
+    // Caller reads plan earlier when alertEnabled is true
+    const earlierSnapshot = (await listPlans(user.id))[0];
+    assert.equal(earlierSnapshot?.alertEnabled, true);
+    assert.equal(earlierSnapshot?.targetPrice, 15000);
+
+    // Seed baseline before first PATCH
+    await client.execute({
+      sql: "UPDATE plans SET last_alert_price = 11000, last_alert_at = '2026-10-16T01:00:00.000Z' WHERE id = ?",
+      args: [planId],
+    });
+
+    // PATCH 1: disable alerts only -> target_price must remain 15000, revision -> 1, baseline reset
+    const patchDisable = await updatePlan(user.id, user.verified, planId, {
+      alertEnabled: false,
+    });
+    assert.ok(patchDisable.ok);
+    assert.equal(patchDisable.plan.alertEnabled, false);
+    assert.equal(patchDisable.plan.targetPrice, 15000);
+    assert.equal(patchDisable.plan.lastAlertPrice, null);
+
+    const rowAfter1 = await client.execute({
+      sql: "SELECT revision, alert_enabled, target_price, last_alert_price, last_alert_at FROM plans WHERE id = ?",
+      args: [planId],
+    });
+    assert.equal(Number(rowAfter1.rows[0]?.revision), 1);
+    assert.equal(Number(rowAfter1.rows[0]?.alert_enabled), 0);
+    assert.equal(Number(rowAfter1.rows[0]?.target_price), 15000);
+    assert.equal(rowAfter1.rows[0]?.last_alert_price, null);
+    assert.equal(rowAfter1.rows[0]?.last_alert_at, null);
+
+    // Seed baseline again before second PATCH
+    await client.execute({
+      sql: "UPDATE plans SET last_alert_price = 10500, last_alert_at = '2026-10-16T02:00:00.000Z' WHERE id = ?",
+      args: [planId],
+    });
+
+    // PATCH 2: target-only PATCH running after the disable -> alert_enabled must stay 0, revision -> 2, baseline reset
+    const patchTargetOnly = await updatePlan(user.id, user.verified, planId, {
+      targetPrice: 13500,
+    });
+    assert.ok(patchTargetOnly.ok);
+    assert.equal(patchTargetOnly.plan.alertEnabled, false);
+    assert.equal(patchTargetOnly.plan.targetPrice, 13500);
+    assert.equal(patchTargetOnly.plan.lastAlertPrice, null);
+
+    const rowAfter2 = await client.execute({
+      sql: "SELECT revision, alert_enabled, target_price, last_alert_price, last_alert_at FROM plans WHERE id = ?",
+      args: [planId],
+    });
+    assert.equal(Number(rowAfter2.rows[0]?.revision), 2);
+    assert.equal(Number(rowAfter2.rows[0]?.alert_enabled), 0);
+    assert.equal(Number(rowAfter2.rows[0]?.target_price), 13500);
+    assert.equal(rowAfter2.rows[0]?.last_alert_price, null);
+    assert.equal(rowAfter2.rows[0]?.last_alert_at, null);
+
+    // PATCH 3: alertEnabled-only PATCH -> target_price must stay 13500, revision -> 3
+    const patchEnableOnly = await updatePlan(user.id, user.verified, planId, {
+      alertEnabled: true,
+    });
+    assert.ok(patchEnableOnly.ok);
+    assert.equal(patchEnableOnly.plan.alertEnabled, true);
+    assert.equal(patchEnableOnly.plan.targetPrice, 13500);
+
+    // Back-to-back concurrent PATCHes (one target-only, one disabling alerts) never overwrite each other's field
+    const [concurrentTarget, concurrentDisable] = await Promise.all([
+      updatePlan(user.id, user.verified, planId, { targetPrice: 12000 }),
+      updatePlan(user.id, user.verified, planId, { alertEnabled: false }),
+    ]);
+    assert.ok(concurrentTarget.ok && concurrentDisable.ok);
+
+    const finalRow = await client.execute({
+      sql: "SELECT revision, alert_enabled, target_price, last_alert_price, last_alert_at FROM plans WHERE id = ?",
+      args: [planId],
+    });
+    assert.equal(Number(finalRow.rows[0]?.revision), 5);
+    assert.equal(Number(finalRow.rows[0]?.alert_enabled), 0);
+    assert.equal(Number(finalRow.rows[0]?.target_price), 12000);
+    assert.equal(finalRow.rows[0]?.last_alert_price, null);
+    assert.equal(finalRow.rows[0]?.last_alert_at, null);
+
+    client.close();
+  } finally {
+    if (prevUrl === undefined) delete process.env.TURSO_DATABASE_URL;
+    else process.env.TURSO_DATABASE_URL = prevUrl;
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // Windows SQLite file handle may release asynchronously on process exit
+    }
+  }
+});
