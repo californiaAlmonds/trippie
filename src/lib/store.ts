@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync } from "node:fs";
-import { createClient, type Client } from "@libsql/client";
+import { createClient, type InStatement, type ResultSet, type TransactionMode } from "@libsql/client";
 import type { DayFare } from "./types.ts";
 import { addDays, computeWindows, monthBounds } from "./windows.ts";
 
@@ -16,7 +16,6 @@ export interface FareRecord {
   status: FareStatus;
 }
 
-let client: Client | undefined;
 let ready: Promise<unknown> | undefined;
 
 const SCHEMA = `
@@ -47,15 +46,38 @@ export function dbConfigured(): boolean {
   return Boolean(process.env.TURSO_DATABASE_URL) || existsSync("data/trippie.db");
 }
 
-async function db(): Promise<Client> {
-  if (!client) {
+interface Db {
+  execute(stmt: InStatement): Promise<ResultSet>;
+  batch(stmts: InStatement[], mode: TransactionMode): Promise<ResultSet[]>;
+}
+
+// Remote libSQL over HTTP occasionally drops an idle keep-alive socket; all our writes are safe to repeat.
+const RETRYABLE = /ECONNRESET|socket connection was closed|fetch failed/i;
+async function retry<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (e) {
+    if (!RETRYABLE.test(String(e))) throw e;
+    await new Promise((r) => setTimeout(r, 1_000));
+    return fn();
+  }
+}
+
+let conn: Db | undefined;
+
+async function db(): Promise<Db> {
+  if (!conn) {
     const url = process.env.TURSO_DATABASE_URL ?? "file:data/trippie.db";
     if (url.startsWith("file:")) mkdirSync("data", { recursive: true });
-    client = createClient({ url, authToken: process.env.TURSO_AUTH_TOKEN });
-    ready = client.executeMultiple(SCHEMA);
+    const client = createClient({ url, authToken: process.env.TURSO_AUTH_TOKEN });
+    conn = {
+      execute: (stmt) => retry(() => client.execute(stmt)),
+      batch: (stmts, mode) => retry(() => client.batch(stmts, mode)),
+    };
+    ready = retry(() => client.executeMultiple(SCHEMA));
   }
   await ready;
-  return client;
+  return conn;
 }
 
 export async function saveFares(records: FareRecord[], provider = "google-flights") {
@@ -146,9 +168,9 @@ export async function getBestWindowHistory(
   maxGap: number,
 ): Promise<HistoryPoint[]> {
   const { first, last } = monthBounds(month);
-  const conn = await db();
+  const database = await db();
   const load = async (o: string, d: string, from: string, to: string) => {
-    const rs = await conn.execute({
+    const rs = await database.execute({
       sql: `SELECT snapshot_day, travel_date AS date, price FROM fares
             WHERE origin = ? AND destination = ? AND travel_date BETWEEN ? AND ? AND status = 'ok'`,
       args: [o, d, from, to],
