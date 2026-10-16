@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { createUser } from "../auth/users.ts";
 import type { SendMailInput } from "../mailer.ts";
-import { createPlan, listPlans } from "../plans/index.ts";
+import { createPlan, listPlans, updatePlan } from "../plans/index.ts";
 import { type FareRecord, getClient, saveFares } from "../store.ts";
 import { addDays, monthBounds } from "../windows.ts";
 import { runAlerts } from "./engine.ts";
@@ -312,6 +312,306 @@ test("alerts engine: respects target_price and skips unverified users, expired m
     assert.equal(summary.skipped["insufficient data"], 2);
     assert.equal(summary.skipped["above target"], 1);
     assert.equal(sent.length, 0);
+
+    client.close();
+  } finally {
+    if (prevUrl === undefined) delete process.env.TURSO_DATABASE_URL;
+    else process.env.TURSO_DATABASE_URL = prevUrl;
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // Windows SQLite file handle may release asynchronously on process exit
+    }
+  }
+});
+
+test("alerts engine deterministic interleaving: beforeClaim guards against disable/target drop, beforeComplete preserves concurrent PATCH baseline reset", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "trippie-alerts-interleave-"));
+  const dbPath = join(dir, "interleave.db").replace(/\\/g, "/");
+  const prevUrl = process.env.TURSO_DATABASE_URL;
+  process.env.TURSO_DATABASE_URL = `file:${dbPath}`;
+
+  try {
+    const client = await getClient();
+    const userRes = await createUser("interleave@example.com", "scrypt$hash", { verified: true });
+    assert.ok(userRes.ok);
+    const user = userRes.user;
+
+    const planRes = await createPlan(
+      user.id,
+      true,
+      {
+        origin: "BLR",
+        destination: "IXZ",
+        month: "2027-02",
+        trip: "round",
+        minGap: 4,
+        maxGap: 7,
+        alertEnabled: true,
+        targetPrice: 12000,
+      },
+      NOW,
+    );
+    assert.ok(planRes.ok);
+    const planId = planRes.plan.id;
+
+    // Best price B = 5000 + 5500 = 10500
+    const { first, last } = monthBounds("2027-02");
+    await saveFares([
+      ...buildMonthFares("BLR", "IXZ", first, last, TODAY, 5000),
+      ...buildMonthFares("IXZ", "BLR", addDays(first, 4), addDays(last, 7), TODAY, 5500),
+    ]);
+
+    // (3a) Disable between evaluation and claim => no email, no ledger row
+    const sent1: SendMailInput[] = [];
+    const summary1 = await runAlerts({
+      now: NOW,
+      appSecret: TEST_SECRET,
+      appOrigin: "https://trippie.example.com",
+      hooks: {
+        beforeClaim: async (p) => {
+          const r = await updatePlan(user.id, true, p.id, { alertEnabled: false }, NOW);
+          assert.ok(r.ok);
+        },
+      },
+      sendMail: async (msg) => {
+        sent1.push(msg);
+      },
+    });
+    assert.equal(summary1.sent, 0);
+    assert.equal(sent1.length, 0);
+    const deliv1 = await client.execute({
+      sql: "SELECT COUNT(*) AS c FROM alert_deliveries WHERE plan_id = ?",
+      args: [planId],
+    });
+    assert.equal(Number(deliv1.rows[0]?.c), 0);
+
+    // Re-enable alerts with targetPrice = 12000 for next sub-test
+    const reenable = await updatePlan(user.id, true, planId, {
+      alertEnabled: true,
+      targetPrice: 12000,
+    }, NOW);
+    assert.ok(reenable.ok);
+
+    // (3b) Lowering target below B (10500) between evaluation and claim => no email, no ledger row
+    const sent2: SendMailInput[] = [];
+    const summary2 = await runAlerts({
+      now: NOW,
+      appSecret: TEST_SECRET,
+      appOrigin: "https://trippie.example.com",
+      hooks: {
+        beforeClaim: async (p) => {
+          const r = await updatePlan(user.id, true, p.id, { targetPrice: 9000 }, NOW);
+          assert.ok(r.ok);
+        },
+      },
+      sendMail: async (msg) => {
+        sent2.push(msg);
+      },
+    });
+    assert.equal(summary2.sent, 0);
+    assert.equal(sent2.length, 0);
+    const deliv2 = await client.execute({
+      sql: "SELECT COUNT(*) AS c FROM alert_deliveries WHERE plan_id = ?",
+      args: [planId],
+    });
+    assert.equal(Number(deliv2.rows[0]?.c), 0);
+
+    // Raise target back to 12000 so plan is eligible for in-flight send test
+    const raiseTarget = await updatePlan(user.id, true, planId, { targetPrice: 12000 }, NOW);
+    assert.ok(raiseTarget.ok);
+
+    // (4) PATCH (target change) while a send is in flight => ledger row is 'sent' but last_alert_price stays NULL
+    const sent3: SendMailInput[] = [];
+    const summary3 = await runAlerts({
+      now: NOW,
+      appSecret: TEST_SECRET,
+      appOrigin: "https://trippie.example.com",
+      hooks: {
+        beforeComplete: async (p) => {
+          // Simulate a pre-existing baseline that the concurrent PATCH resets to NULL while bumping revision
+          await client.execute({
+            sql: "UPDATE plans SET last_alert_price = 11500, last_alert_at = '2026-10-15T00:00:00.000Z' WHERE id = ?",
+            args: [p.id],
+          });
+          const r = await updatePlan(user.id, true, p.id, { targetPrice: 11000 }, NOW);
+          assert.ok(r.ok);
+        },
+      },
+      sendMail: async (msg) => {
+        sent3.push(msg);
+      },
+    });
+    assert.equal(summary3.sent, 1);
+    assert.equal(sent3.length, 1);
+
+    const deliv3 = await client.execute({
+      sql: "SELECT status FROM alert_deliveries WHERE plan_id = ? AND day = ?",
+      args: [planId, TODAY],
+    });
+    assert.equal(String(deliv3.rows[0]?.status), "sent");
+
+    const planRowAfter = await client.execute({
+      sql: "SELECT target_price, last_alert_price, last_alert_at FROM plans WHERE id = ?",
+      args: [planId],
+    });
+    assert.equal(Number(planRowAfter.rows[0]?.target_price), 11000);
+    assert.equal(planRowAfter.rows[0]?.last_alert_price, null);
+    assert.equal(planRowAfter.rows[0]?.last_alert_at, null);
+
+    client.close();
+  } finally {
+    if (prevUrl === undefined) delete process.env.TURSO_DATABASE_URL;
+    else process.env.TURSO_DATABASE_URL = prevUrl;
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // Windows SQLite file handle may release asynchronously on process exit
+    }
+  }
+});
+
+test("alerts engine current-month evaluation: ignores past departure dates and measures coverage over remaining dates for one-way and round-trip", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "trippie-alerts-curmonth-"));
+  const dbPath = join(dir, "curmonth.db").replace(/\\/g, "/");
+  const prevUrl = process.env.TURSO_DATABASE_URL;
+  process.env.TURSO_DATABASE_URL = `file:${dbPath}`;
+
+  try {
+    const client = await getClient();
+    const userRes = await createUser("curmonth@example.com", "scrypt$hash", { verified: true });
+    assert.ok(userRes.ok);
+    const user = userRes.user;
+
+    // Part A: With now = 2026-10-16, an October-15 fare is ignored even if its snapshot_day is 2026-10-16
+    const oct16Now = new Date("2026-10-16T08:00:00.000Z");
+    const planOneway16 = await createPlan(
+      user.id,
+      true,
+      {
+        origin: "BLR",
+        destination: "GOI",
+        month: "2026-10",
+        trip: "oneway",
+        alertEnabled: true,
+        targetPrice: 4000,
+      },
+      oct16Now,
+    );
+    assert.ok(planOneway16.ok);
+
+    await saveFares([
+      // Past departure date (Oct 15 < Oct 16) with very cheap fare 1500
+      {
+        day: "2026-10-16",
+        origin: "BLR",
+        destination: "GOI",
+        date: "2026-10-15",
+        price: 1500,
+        airline: "IndiGo",
+        stops: 0,
+        status: "ok",
+      },
+      // Remaining dates Oct 16..31 (16 dates) at 3200
+      ...buildMonthFares("BLR", "GOI", "2026-10-16", "2026-10-31", "2026-10-16", 3200),
+    ]);
+
+    const sentOct16: SendMailInput[] = [];
+    const summaryOct16 = await runAlerts({
+      now: oct16Now,
+      appSecret: TEST_SECRET,
+      appOrigin: "https://trippie.example.com",
+      sendMail: async (msg) => {
+        sentOct16.push(msg);
+      },
+    });
+    assert.equal(summaryOct16.sent, 1);
+    assert.equal(sentOct16.length, 1);
+    assert.match(sentOct16[0]!.subject, /from ₹3,200/);
+    assert.ok(!sentOct16[0]!.text.includes("2026-10-15"));
+    assert.ok(!sentOct16[0]!.html.includes("2026-10-15"));
+
+    // Disable first plan so Part B evaluates only the Oct 20 plans cleanly
+    await updatePlan(user.id, true, planOneway16.plan.id, { alertEnabled: false }, oct16Now);
+
+    // Part B: With now = 2026-10-20, 100% fresh coverage for Oct 20..31 (12 dates, <50% of 31-day month)
+    // passes the 50% rule for both one-way and round-trip (inbound Oct 24..Nov 07, 15 dates, <50% of 34-day full inbound range)
+    const oct20Now = new Date("2026-10-20T08:00:00.000Z");
+    const planOneway20 = await createPlan(
+      user.id,
+      true,
+      {
+        origin: "DEL",
+        destination: "BOM",
+        month: "2026-10",
+        trip: "oneway",
+        alertEnabled: true,
+        targetPrice: 5000,
+      },
+      oct20Now,
+    );
+    const planRound20 = await createPlan(
+      user.id,
+      true,
+      {
+        origin: "DEL",
+        destination: "BOM",
+        month: "2026-10",
+        trip: "round",
+        minGap: 4,
+        maxGap: 7,
+        alertEnabled: true,
+        targetPrice: 9500,
+      },
+      oct20Now,
+    );
+    assert.ok(planOneway20.ok && planRound20.ok);
+
+    await saveFares([
+      // Past outbound and pre-gap inbound fares with ultra-low prices that must be ignored
+      {
+        day: "2026-10-20",
+        origin: "DEL",
+        destination: "BOM",
+        date: "2026-10-15",
+        price: 999,
+        airline: "IndiGo",
+        stops: 0,
+        status: "ok",
+      },
+      {
+        day: "2026-10-20",
+        origin: "BOM",
+        destination: "DEL",
+        date: "2026-10-22",
+        price: 999,
+        airline: "IndiGo",
+        stops: 0,
+        status: "ok",
+      },
+      // Remaining outbound Oct 20..31 (12 dates) at 4100
+      ...buildMonthFares("DEL", "BOM", "2026-10-20", "2026-10-31", "2026-10-20", 4100),
+      // Clamped inbound Oct 24..Nov 07 (15 dates) at 4400 => round-trip total 8500
+      ...buildMonthFares("BOM", "DEL", "2026-10-24", "2026-11-07", "2026-10-20", 4400),
+    ]);
+
+    const sentOct20: SendMailInput[] = [];
+    const summaryOct20 = await runAlerts({
+      now: oct20Now,
+      appSecret: TEST_SECRET,
+      appOrigin: "https://trippie.example.com",
+      sendMail: async (msg) => {
+        sentOct20.push(msg);
+      },
+    });
+    assert.equal(summaryOct20.considered, 2);
+    assert.equal(summaryOct20.sent, 2);
+    assert.equal(sentOct20.length, 2);
+    assert.match(sentOct20[0]!.subject, /from ₹4,100/);
+    assert.ok(!sentOct20[0]!.text.includes("2026-10-15"));
+    assert.match(sentOct20[1]!.subject, /from ₹8,500/);
+    assert.ok(!sentOct20[1]!.text.includes("2026-10-15"));
+    assert.ok(!sentOct20[1]!.text.includes("to 2026-10-22"));
 
     client.close();
   } finally {

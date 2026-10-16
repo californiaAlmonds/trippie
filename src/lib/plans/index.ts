@@ -236,9 +236,14 @@ export async function createPlan(
   };
 }
 
+const PATCH_COLUMNS = {
+  alertEnabled: "alert_enabled",
+  targetPrice: "target_price",
+} as const;
+
 /**
  * Updates `alertEnabled` and/or `targetPrice` on a plan owned by `userId`.
- * Resets `last_alert_price = NULL` and `last_alert_at = NULL`.
+ * Resets `last_alert_price = NULL` and `last_alert_at = NULL`, and increments `revision`.
  */
 export async function updatePlan(
   userId: string,
@@ -267,44 +272,32 @@ export async function updatePlan(
     validatedTarget = targetRes.value;
   }
 
-  const client = await getClient();
-  const existingRs = await client.execute({
-    sql: `SELECT id, origin, destination, month, trip, min_gap, max_gap,
-                 alert_enabled, target_price, last_alert_price, created_at
-          FROM plans
-          WHERE id = ? AND user_id = ?`,
-    args: [planId, userId],
-  });
-  const existing = existingRs.rows[0];
-  if (!existing) {
-    return { ok: false, status: 404, error: "Not found" };
-  }
-
   if (hasAlertEnabled && body.alertEnabled === true && !userVerified) {
     return { ok: false, status: 403, error: "Verify your email to enable alerts" };
   }
 
-  const nextAlertEnabled = hasAlertEnabled
-    ? body.alertEnabled
-      ? 1
-      : 0
-    : Number(existing.alert_enabled);
-  const nextTargetPrice = hasTargetPrice
-    ? validatedTarget
-    : existing.target_price == null
-      ? null
-      : Number(existing.target_price);
+  const setClauses: string[] = [];
+  const args: Array<string | number | null> = [];
 
+  if (hasAlertEnabled) {
+    setClauses.push(`${PATCH_COLUMNS.alertEnabled} = ?`);
+    args.push(body.alertEnabled ? 1 : 0);
+  }
+  if (hasTargetPrice) {
+    setClauses.push(`${PATCH_COLUMNS.targetPrice} = ?`);
+    args.push(validatedTarget);
+  }
+  setClauses.push("last_alert_price = NULL", "last_alert_at = NULL", "revision = revision + 1");
+  args.push(planId, userId);
+
+  const client = await getClient();
   const updatedRs = await client.execute({
     sql: `UPDATE plans
-          SET alert_enabled = ?,
-              target_price = ?,
-              last_alert_price = NULL,
-              last_alert_at = NULL
+          SET ${setClauses.join(", ")}
           WHERE id = ? AND user_id = ?
           RETURNING id, origin, destination, month, trip, min_gap, max_gap,
                     alert_enabled, target_price, last_alert_price, created_at`,
-    args: [nextAlertEnabled, nextTargetPrice, planId, userId],
+    args,
   });
   const updated = updatedRs.rows[0];
   if (!updated) {

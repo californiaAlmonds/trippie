@@ -106,6 +106,12 @@ export const MIGRATIONS: readonly Migration[] = [
       )`,
     ],
   },
+  {
+    id: 4,
+    statements: [
+      `ALTER TABLE plans ADD COLUMN revision INTEGER NOT NULL DEFAULT 0`,
+    ],
+  },
 ];
 
 const SQLITE_BUSY_RE = /SQLITE_BUSY|database is locked/i;
@@ -129,16 +135,30 @@ export async function migrate(client: Client): Promise<void> {
       for (const m of ordered) {
         if (applied.has(m.id)) continue;
         const now = new Date().toISOString();
-        await client.batch(
-          [
-            ...m.statements.map((sql) => ({ sql, args: [] })),
-            {
+        const tx = await client.transaction("write");
+        try {
+          const check = await tx.execute({
+            sql: "SELECT 1 FROM schema_migrations WHERE id = ?",
+            args: [m.id],
+          });
+          if (check.rows.length === 0) {
+            for (const sql of m.statements) {
+              await tx.execute(sql);
+            }
+            await tx.execute({
               sql: "INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?) ON CONFLICT(id) DO NOTHING",
               args: [m.id, now],
-            },
-          ],
-          "write",
-        );
+            });
+          }
+          await tx.commit();
+        } catch (err) {
+          if (!tx.closed) {
+            await tx.rollback().catch(() => undefined);
+          }
+          throw err;
+        } finally {
+          tx.close();
+        }
       }
       return;
     } catch (err) {
