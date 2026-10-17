@@ -87,15 +87,6 @@ export function formatRelativeChecked(iso?: string | null, nowMs = Date.now()): 
 export const ESTIMATE_TOOLTIP =
   "Cached price from a third-party source; may be outdated";
 
-// TODO: Remove cast once links.ts adds the optional 5th `{ currency?, cabin? }` parameter on this branch.
-type SiteUrlWithOpts = (
-  o: string,
-  d: string,
-  dep: IsoDate,
-  ret?: IsoDate,
-  opts?: { currency?: string; cabin?: Cabin },
-) => string;
-
 export function buildBookingUrl(
   site: Site,
   origin: string,
@@ -104,7 +95,6 @@ export function buildBookingUrl(
   returnDate?: IsoDate,
   opts?: { currency?: string; cabin?: Cabin },
 ): string {
-  const fn = site.url as unknown as SiteUrlWithOpts;
-  return fn(origin, destination, departDate, returnDate, opts);
+  return site.url(origin, destination, departDate, returnDate, opts);
 }
 

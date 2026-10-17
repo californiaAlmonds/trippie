@@ -1,3 +1,4 @@
+import { isKnownAirport } from "./geo/airports.ts";
 import { getProvider } from "./providers/index.ts";
 import { dbConfigured, getBestWindowStats, getFreshness, getRouteStats } from "./store.ts";
 import type { Cabin, DayFare, PriceStats, RouteFreshness, TripWindow } from "./types.ts";
@@ -41,6 +42,7 @@ export function parseSearch(sp: URLSearchParams): SearchParams | { error: string
   const trip = sp.get("trip") ?? "round";
   const cabin = sp.get("cabin") ?? "economy";
   if (!/^[A-Z]{3}$/.test(origin) || !/^[A-Z]{3}$/.test(destination)) return { error: "Invalid airport code" };
+  if (!isKnownAirport(origin) || !isKnownAirport(destination)) return { error: "Unknown airport" };
   if (origin === destination) return { error: "Origin and destination must differ" };
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return { error: "month must be YYYY-MM" };
   if (month < new Date().toISOString().slice(0, 7)) return { error: "month is in the past" };
