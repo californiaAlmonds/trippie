@@ -125,6 +125,59 @@ export const MIGRATIONS: readonly Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_devices_user_id ON devices(user_id)`,
     ],
   },
+  {
+    // Cabin class + flight details on fares (PK changes, so rebuild; nothing references fares),
+    // demand-driven route tracking, per-user preferences, and cabin on plans/recents.
+    id: 6,
+    statements: [
+      `CREATE TABLE fares_v2 (
+        snapshot_day TEXT NOT NULL,
+        origin TEXT NOT NULL,
+        destination TEXT NOT NULL,
+        travel_date TEXT NOT NULL,
+        cabin TEXT NOT NULL DEFAULT 'economy' CHECK (cabin IN ('economy','business')),
+        price INTEGER,
+        airline TEXT,
+        stops INTEGER,
+        dep_time TEXT,
+        arr_time TEXT,
+        arr_day_offset INTEGER,
+        duration_min INTEGER,
+        flight_no TEXT,
+        aircraft TEXT,
+        status TEXT NOT NULL CHECK (status IN ('ok','no_flights','blocked','parse_error')),
+        provider TEXT NOT NULL,
+        scraped_at TEXT NOT NULL,
+        PRIMARY KEY (snapshot_day, origin, destination, travel_date, cabin)
+      )`,
+      `INSERT INTO fares_v2 (snapshot_day, origin, destination, travel_date, cabin, price, airline, stops, status, provider, scraped_at)
+       SELECT snapshot_day, origin, destination, travel_date, 'economy', price, airline, stops, status, provider, scraped_at FROM fares`,
+      `DROP TABLE fares`,
+      `ALTER TABLE fares_v2 RENAME TO fares`,
+      `CREATE INDEX IF NOT EXISTS idx_fares_route ON fares(origin, destination, cabin, travel_date)`,
+      `CREATE TABLE IF NOT EXISTS tracked_routes (
+        origin TEXT NOT NULL,
+        destination TEXT NOT NULL,
+        month TEXT NOT NULL,
+        trip TEXT NOT NULL CHECK (trip IN ('round','oneway')),
+        min_gap INTEGER NOT NULL,
+        max_gap INTEGER NOT NULL,
+        cabin TEXT NOT NULL CHECK (cabin IN ('economy','business')),
+        source TEXT NOT NULL CHECK (source IN ('search','plan','config')),
+        last_requested_at TEXT NOT NULL,
+        last_dispatched_at TEXT,
+        last_scraped_at TEXT,
+        PRIMARY KEY (origin, destination, month, trip, min_gap, max_gap, cabin)
+      )`,
+      `CREATE TABLE IF NOT EXISTS user_prefs (
+        user_id TEXT PRIMARY KEY REFERENCES users(id),
+        currency TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+      `ALTER TABLE plans ADD COLUMN cabin TEXT NOT NULL DEFAULT 'economy' CHECK (cabin IN ('economy','business'))`,
+      `ALTER TABLE recent_searches ADD COLUMN cabin TEXT NOT NULL DEFAULT 'economy' CHECK (cabin IN ('economy','business'))`,
+    ],
+  },
 ];
 
 const SQLITE_BUSY_RE = /SQLITE_BUSY|database is locked/i;

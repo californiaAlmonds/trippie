@@ -132,7 +132,7 @@ test("migration 3 applies cleanly on top of existing migration 1 and 2 data", as
     const migRows = await client.execute("SELECT id FROM schema_migrations ORDER BY id");
     assert.deepEqual(
       migRows.rows.map((r) => Number(r.id)),
-      [1, 2, 3, 4, 5],
+      MIGRATIONS.map((m) => m.id),
     );
 
     // Pre-existing rows remain intact and can be referenced by new migration 3 tables
@@ -213,7 +213,7 @@ test("migration 4 applies cleanly on top of existing migration 1..3 data and is 
     const migRows = await client.execute("SELECT id FROM schema_migrations ORDER BY id");
     assert.deepEqual(
       migRows.rows.map((r) => Number(r.id)),
-      [1, 2, 3, 4, 5],
+      MIGRATIONS.map((m) => m.id),
     );
 
     const planRs = await client.execute({
@@ -278,7 +278,7 @@ test("migration 5 applies cleanly on top of existing migration 1..4 data and cre
     const migRows = await client.execute("SELECT id FROM schema_migrations ORDER BY id");
     assert.deepEqual(
       migRows.rows.map((r) => Number(r.id)),
-      [1, 2, 3, 4, 5],
+      MIGRATIONS.map((m) => m.id),
     );
 
     // Existing user and plan remain intact
@@ -390,6 +390,76 @@ test("concurrent migrate() calls on one temp file DB succeed without duplicating
   } finally {
     clientA.close();
     clientB.close();
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // Windows SQLite file handle may release asynchronously on process exit
+    }
+  }
+});
+
+test("migration 6 rebuilds fares with cabin + flight details, keeps existing rows, and adds tracking/prefs/cabin columns", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "trippie-mig6-"));
+  const dbPath = join(dir, "mig6.db").replace(/\\/g, "/");
+  const client = createClient({ url: `file:${dbPath}` });
+
+  try {
+    await client.execute("PRAGMA foreign_keys = ON");
+    await client.execute("CREATE TABLE schema_migrations (id INTEGER PRIMARY KEY, applied_at TEXT)");
+    for (const m of MIGRATIONS.filter((x) => x.id <= 5)) {
+      await client.batch(
+        [
+          ...m.statements.map((sql) => ({ sql, args: [] })),
+          { sql: "INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)", args: [m.id, "2026-10-17T00:00:00.000Z"] },
+        ],
+        "write",
+      );
+    }
+    await client.execute(`INSERT INTO fares (snapshot_day, origin, destination, travel_date, price, airline, stops, status, provider, scraped_at)
+      VALUES ('2026-10-16', 'BLR', 'IXZ', '2027-02-10', 12734, 'IndiGo', 1, 'ok', 'google-flights', '2026-10-16T01:00:00.000Z')`);
+    const userId = "00000000-0000-4000-8000-000000000201";
+    await client.execute({
+      sql: "INSERT INTO users (id, email, password_hash, created_at, verified_at) VALUES (?, 'mig6@example.com', 'x', '2026-10-16T00:00:00.000Z', NULL)",
+      args: [userId],
+    });
+    await client.execute({
+      sql: `INSERT INTO plans (id, user_id, origin, destination, month, trip, min_gap, max_gap, created_at)
+            VALUES ('p6', ?, 'BLR', 'IXZ', '2027-02', 'round', 5, 7, '2026-10-16T00:00:00.000Z')`,
+      args: [userId],
+    });
+    await client.execute({
+      sql: "INSERT INTO alert_deliveries (plan_id, day, status, created_at) VALUES ('p6', '2026-10-16', 'sent', '2026-10-16T00:00:00.000Z')",
+      args: [],
+    });
+
+    await migrate(client);
+    await migrate(client);
+
+    const fare = await client.execute("SELECT cabin, price, airline, dep_time, aircraft FROM fares");
+    assert.equal(fare.rows.length, 1);
+    assert.equal(fare.rows[0].cabin, "economy");
+    assert.equal(Number(fare.rows[0].price), 12734);
+    assert.equal(fare.rows[0].dep_time, null);
+
+    // Same route/day may now hold a business fare alongside economy.
+    await client.execute(`INSERT INTO fares (snapshot_day, origin, destination, travel_date, cabin, price, status, provider, scraped_at)
+      VALUES ('2026-10-16', 'BLR', 'IXZ', '2027-02-10', 'business', 41000, 'ok', 'google-flights', '2026-10-16T01:00:00.000Z')`);
+    await assert.rejects(
+      () => client.execute(`INSERT INTO fares (snapshot_day, origin, destination, travel_date, cabin, status, provider, scraped_at)
+        VALUES ('2026-10-16', 'BLR', 'IXZ', '2027-02-11', 'first', 'ok', 'x', 'x')`),
+      /CHECK constraint failed/i,
+    );
+
+    const plan = await client.execute("SELECT cabin FROM plans WHERE id = 'p6'");
+    assert.equal(plan.rows[0].cabin, "economy");
+    const tables = await client.execute(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('tracked_routes','user_prefs','fares_v2') ORDER BY name",
+    );
+    assert.deepEqual(tables.rows.map((r) => r.name), ["tracked_routes", "user_prefs"]);
+    const delivery = await client.execute("SELECT status FROM alert_deliveries WHERE plan_id = 'p6'");
+    assert.equal(delivery.rows[0].status, "sent");
+  } finally {
+    client.close();
     try {
       rmSync(dir, { recursive: true, force: true });
     } catch {
