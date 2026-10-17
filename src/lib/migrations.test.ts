@@ -468,3 +468,105 @@ test("migration 6 rebuilds fares with cabin + flight details, keeps existing row
     }
   }
 });
+
+test("migration 8 rebuilds plans and recent_searches with cabin in constraints while preserving rows, defaults, foreign keys, and indexes", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "trippie-mig8-"));
+  const dbPath = join(dir, "mig8.db").replace(/\\/g, "/");
+  const client = createClient({ url: `file:${dbPath}` });
+
+  try {
+    await client.execute("PRAGMA foreign_keys = ON");
+    await client.execute("CREATE TABLE schema_migrations (id INTEGER PRIMARY KEY, applied_at TEXT)");
+    for (const m of MIGRATIONS.filter((x) => x.id <= 7)) {
+      await client.batch(
+        [
+          ...m.statements.map((sql) => ({ sql, args: [] })),
+          { sql: "INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)", args: [m.id, "2026-10-17T00:00:00.000Z"] },
+        ],
+        "write",
+      );
+    }
+
+    const userId = "00000000-0000-4000-8000-000000000801";
+    await client.execute({
+      sql: "INSERT INTO users (id, email, password_hash, created_at, verified_at) VALUES (?, 'mig8@example.com', 'x', '2026-10-16T00:00:00.000Z', '2026-10-16T00:05:00.000Z')",
+      args: [userId],
+    });
+    await client.execute({
+      sql: `INSERT INTO plans (
+              id, user_id, origin, destination, month, trip, min_gap, max_gap, cabin,
+              alert_enabled, target_price, last_alert_price, last_seen_price, last_alert_at, revision, created_at
+            ) VALUES ('p8-econ', ?, 'BLR', 'IXZ', '2027-02', 'round', 5, 7, 'economy', 1, 12000, 11000, 11200, '2026-10-16T01:00:00.000Z', 3, '2026-10-16T00:00:00.000Z')`,
+      args: [userId],
+    });
+    await client.execute({
+      sql: "INSERT INTO alert_deliveries (plan_id, day, status, created_at) VALUES ('p8-econ', '2026-10-16', 'sent', '2026-10-16T01:00:00.000Z')",
+      args: [],
+    });
+    await client.execute({
+      sql: `INSERT INTO recent_searches (user_id, origin, destination, month, trip, min_gap, max_gap, cabin, created_at)
+            VALUES (?, 'BLR', 'IXZ', '2027-02', 'round', 5, 7, 'economy', '2026-10-16T00:00:00.000Z')`,
+      args: [userId],
+    });
+
+    await migrate(client);
+    await migrate(client);
+
+    // Pre-existing plan, delivery, and recent_searches row survive with all columns intact
+    const planRs = await client.execute("SELECT * FROM plans WHERE id = 'p8-econ'");
+    assert.equal(planRs.rows.length, 1);
+    assert.equal(planRs.rows[0].cabin, "economy");
+    assert.equal(Number(planRs.rows[0].target_price), 12000);
+    assert.equal(Number(planRs.rows[0].last_alert_price), 11000);
+    assert.equal(Number(planRs.rows[0].last_seen_price), 11200);
+    assert.equal(Number(planRs.rows[0].revision), 3);
+
+    const delivRs = await client.execute("SELECT status FROM alert_deliveries WHERE plan_id = 'p8-econ'");
+    assert.equal(delivRs.rows.length, 1);
+    assert.equal(delivRs.rows[0].status, "sent");
+
+    // Saving the exact same route/window in business now succeeds in both plans and recent_searches
+    await client.execute({
+      sql: `INSERT INTO plans (id, user_id, origin, destination, month, trip, min_gap, max_gap, cabin, created_at)
+            VALUES ('p8-biz', ?, 'BLR', 'IXZ', '2027-02', 'round', 5, 7, 'business', '2026-10-17T00:00:00.000Z')`,
+      args: [userId],
+    });
+    await client.execute({
+      sql: `INSERT INTO recent_searches (user_id, origin, destination, month, trip, min_gap, max_gap, cabin, created_at)
+            VALUES (?, 'BLR', 'IXZ', '2027-02', 'round', 5, 7, 'business', '2026-10-17T00:00:00.000Z')`,
+      args: [userId],
+    });
+
+    // Duplicate within the same cabin is still rejected
+    await assert.rejects(
+      () =>
+        client.execute({
+          sql: `INSERT INTO plans (id, user_id, origin, destination, month, trip, min_gap, max_gap, cabin, created_at)
+                VALUES ('p8-biz-dup', ?, 'BLR', 'IXZ', '2027-02', 'round', 5, 7, 'business', '2026-10-17T00:00:00.000Z')`,
+          args: [userId],
+        }),
+      /UNIQUE constraint failed|SQLITE_CONSTRAINT/i,
+    );
+
+    const recentsRs = await client.execute({
+      sql: "SELECT cabin FROM recent_searches WHERE user_id = ? ORDER BY cabin ASC",
+      args: [userId],
+    });
+    assert.deepEqual(
+      recentsRs.rows.map((r) => String(r.cabin)),
+      ["business", "economy"],
+    );
+
+    const idxRs = await client.execute(
+      "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_plans_user_id'",
+    );
+    assert.equal(idxRs.rows.length, 1);
+  } finally {
+    client.close();
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // Windows SQLite file handle may release asynchronously on process exit
+    }
+  }
+});

@@ -10,51 +10,18 @@ import {
   useRef,
   useState,
 } from "react";
+import {
+  type CurrencyInfo,
+  convertFromInr,
+  isSupportedCurrency,
+  SUPPORTED_CURRENCIES,
+} from "@/lib/geo/currency";
 import { useAccount } from "../account/AccountProvider";
 import { api } from "../account/api";
 import { CheckIcon, CloseIcon } from "../icons";
 
-export interface CurrencyMeta {
-  code: string;
-  symbol: string;
-  name: string;
-  decimals: number;
-}
-
-export const SUPPORTED_CURRENCIES: readonly CurrencyMeta[] = [
-  { code: "INR", symbol: "₹", name: "Indian Rupee", decimals: 0 },
-  { code: "USD", symbol: "$", name: "US Dollar", decimals: 0 },
-  { code: "EUR", symbol: "€", name: "Euro", decimals: 0 },
-  { code: "GBP", symbol: "£", name: "British Pound", decimals: 0 },
-  { code: "AED", symbol: "AED", name: "UAE Dirham", decimals: 0 },
-  { code: "SGD", symbol: "S$", name: "Singapore Dollar", decimals: 0 },
-  { code: "AUD", symbol: "A$", name: "Australian Dollar", decimals: 0 },
-  { code: "CAD", symbol: "CA$", name: "Canadian Dollar", decimals: 0 },
-  { code: "JPY", symbol: "¥", name: "Japanese Yen", decimals: 0 },
-  { code: "THB", symbol: "฿", name: "Thai Baht", decimals: 0 },
-  { code: "MYR", symbol: "RM", name: "Malaysian Ringgit", decimals: 0 },
-  { code: "IDR", symbol: "Rp", name: "Indonesian Rupiah", decimals: 0 },
-  { code: "HKD", symbol: "HK$", name: "Hong Kong Dollar", decimals: 0 },
-  { code: "CHF", symbol: "CHF", name: "Swiss Franc", decimals: 0 },
-  { code: "NZD", symbol: "NZ$", name: "New Zealand Dollar", decimals: 0 },
-  { code: "SAR", symbol: "SAR", name: "Saudi Riyal", decimals: 0 },
-  { code: "QAR", symbol: "QAR", name: "Qatari Riyal", decimals: 0 },
-  { code: "KRW", symbol: "₩", name: "South Korean Won", decimals: 0 },
-  { code: "CNY", symbol: "¥", name: "Chinese Yuan", decimals: 0 },
-  { code: "ZAR", symbol: "R", name: "South African Rand", decimals: 0 },
-  { code: "BRL", symbol: "R$", name: "Brazilian Real", decimals: 0 },
-  { code: "SEK", symbol: "kr", name: "Swedish Krona", decimals: 0 },
-  { code: "NOK", symbol: "kr", name: "Norwegian Krone", decimals: 0 },
-  { code: "DKK", symbol: "kr", name: "Danish Krone", decimals: 0 },
-  { code: "PLN", symbol: "zł", name: "Polish Zloty", decimals: 0 },
-  { code: "TRY", symbol: "₺", name: "Turkish Lira", decimals: 0 },
-  { code: "MXN", symbol: "MX$", name: "Mexican Peso", decimals: 0 },
-  { code: "PHP", symbol: "₱", name: "Philippine Peso", decimals: 0 },
-  { code: "VND", symbol: "₫", name: "Vietnamese Dong", decimals: 0 },
-  { code: "LKR", symbol: "Rs", name: "Sri Lankan Rupee", decimals: 0 },
-  { code: "NPR", symbol: "Rs", name: "Nepalese Rupee", decimals: 0 },
-  { code: "BDT", symbol: "৳", name: "Bangladeshi Taka", decimals: 0 },
-] as const;
+export type CurrencyMeta = CurrencyInfo;
+export { SUPPORTED_CURRENCIES };
 
 export interface RatesAttribution {
   text: string;
@@ -147,8 +114,8 @@ export function CurrencyProvider({ children }: { children: ReactNode }) {
     let stored: string | null = null;
     try {
       const raw = window.localStorage.getItem(CURRENCY_STORAGE_KEY);
-      if (raw && /^[A-Z]{3}$/.test(raw.toUpperCase())) {
-        stored = raw.toUpperCase();
+      if (raw && isSupportedCurrency(raw)) {
+        stored = raw.trim().toUpperCase();
       }
     } catch {
       // Ignore localStorage failures
@@ -176,10 +143,10 @@ export function CurrencyProvider({ children }: { children: ReactNode }) {
         : sessionGeoCache
           ? Promise.resolve(sessionGeoCache)
           : api<{ country?: string | null; currency?: string }>("/api/geo").then((res) => {
-              if (res.ok && typeof res.data?.currency === "string" && /^[A-Z]{3}$/.test(res.data.currency.toUpperCase())) {
+              if (res.ok && typeof res.data?.currency === "string" && isSupportedCurrency(res.data.currency)) {
                 const geo = {
                   country: res.data.country ?? null,
-                  currency: res.data.currency.toUpperCase(),
+                  currency: res.data.currency.trim().toUpperCase(),
                 };
                 sessionGeoCache = geo;
                 return geo;
@@ -226,8 +193,8 @@ export function CurrencyProvider({ children }: { children: ReactNode }) {
     void api<{ currency?: string | null }>("/api/prefs").then((res) => {
       if (cancelled) return;
       if (res.ok && typeof res.data?.currency === "string") {
-        const prefCur = res.data.currency.toUpperCase();
-        if (/^[A-Z]{3}$/.test(prefCur)) {
+        const prefCur = res.data.currency.trim().toUpperCase();
+        if (isSupportedCurrency(prefCur)) {
           const hasRate =
             prefCur === "INR" ||
             Boolean(
@@ -254,7 +221,7 @@ export function CurrencyProvider({ children }: { children: ReactNode }) {
   const setCurrency = useCallback(
     (nextRaw: string) => {
       const next = nextRaw.trim().toUpperCase();
-      if (!/^[A-Z]{3}$/.test(next)) return;
+      if (!isSupportedCurrency(next)) return;
       userInteractedRef.current = true;
       setCurrencyState(next);
       try {
@@ -284,10 +251,10 @@ export function CurrencyProvider({ children }: { children: ReactNode }) {
   const convert = useCallback(
     (inrAmount: number): number => {
       if (!Number.isFinite(inrAmount)) return 0;
-      if (effectiveCurrency === "INR") return inrAmount;
-      return inrAmount * activeRate;
+      const converted = convertFromInr(inrAmount, effectiveCurrency, ratesData?.rates ?? {});
+      return converted ?? inrAmount;
     },
-    [effectiveCurrency, activeRate],
+    [effectiveCurrency, ratesData],
   );
 
   const toInr = useCallback(
@@ -316,11 +283,15 @@ export function CurrencyProvider({ children }: { children: ReactNode }) {
 
   const format = useCallback(
     (inrAmount: number): string => {
-      const converted = convert(inrAmount);
+      if (!Number.isFinite(inrAmount)) return FALLBACK_INR_FORMATTER.format(0);
+      const converted = convertFromInr(inrAmount, effectiveCurrency, ratesData?.rates ?? {});
+      if (converted === null || effectiveCurrency === "INR") {
+        return FALLBACK_INR_FORMATTER.format(Math.round(inrAmount));
+      }
       const formatted = formatter.format(Math.round(converted));
-      return effectiveCurrency === "INR" ? formatted : `≈${formatted}`;
+      return `≈${formatted}`;
     },
-    [convert, formatter, effectiveCurrency],
+    [formatter, effectiveCurrency, ratesData],
   );
 
   const availableCurrencies = useMemo<CurrencyMeta[]>(() => {
@@ -329,20 +300,7 @@ export function CurrencyProvider({ children }: { children: ReactNode }) {
       return [...SUPPORTED_CURRENCIES];
     }
     const set = new Set(["INR", ...rateKeys.map((k) => k.toUpperCase())]);
-    const known = SUPPORTED_CURRENCIES.filter((c) => set.has(c.code));
-    const knownCodes = new Set(known.map((c) => c.code));
-    const extras: CurrencyMeta[] = [];
-    for (const code of set) {
-      if (!knownCodes.has(code) && /^[A-Z]{3}$/.test(code)) {
-        extras.push({
-          code,
-          symbol: getCurrencySymbol(code),
-          name: getCurrencyName(code),
-          decimals: 0,
-        });
-      }
-    }
-    return [...known, ...extras];
+    return SUPPORTED_CURRENCIES.filter((c) => set.has(c.code));
   }, [ratesData]);
 
   const symbol = useMemo(

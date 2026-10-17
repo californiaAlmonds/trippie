@@ -1,7 +1,7 @@
 import { ipRateLimitKey, rateLimit } from "../auth/rateLimit.ts";
-import { parseSearch, type SearchParams } from "../search.ts";
+import { maxAllowedMonth, parseSearch, type SearchParams } from "../search.ts";
 import { getClient } from "../store.ts";
-import { addDays, monthBounds } from "../windows.ts";
+import { addDays, diffDays, monthBounds } from "../windows.ts";
 
 export type TrackStatus = "queued" | "fresh" | "throttled" | "disabled";
 
@@ -13,11 +13,14 @@ export interface TrackResult {
 export type RouteSource = "search" | "plan" | "config";
 
 export const FRESH_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
+export const FRESH_COVERAGE_THRESHOLD = 0.6; // 60% per-leg fresh date coverage
 export const DISPATCH_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
 export const GLOBAL_DISPATCH_LIMIT = 20;
 export const CLIENT_DISPATCH_LIMIT = 6;
 export const DISPATCH_WINDOW_SECONDS = 60 * 60; // 1 hour
 export const ETA_MINUTES = 6;
+export const ANON_PRUNE_DAYS = 30;
+export const ANON_PRUNE_BATCH = 50;
 
 export interface TrackDecisionInput {
   nowMs?: number;
@@ -140,17 +143,17 @@ export async function dispatchGitHubScrape(route: SearchParams, options?: Dispat
 }
 
 /** Builds URLSearchParams from a JSON object and validates with parseSearch. */
-export function parseTrackBody(body: Record<string, unknown>): SearchParams | { error: string } {
+export function parseTrackBody(body: Record<string, unknown>, now = new Date()): SearchParams | { error: string } {
   const sp = new URLSearchParams();
   for (const [k, v] of Object.entries(body)) {
     if (v !== undefined && v !== null) {
       sp.set(k, typeof v === "string" || typeof v === "number" ? String(v) : "invalid");
     }
   }
-  return parseSearch(sp);
+  return parseSearch(sp, now);
 }
 
-/** Upserts a route into tracked_routes, preserving source='plan' if already set. */
+/** Upserts a route into tracked_routes, preserving source='plan' (and 'config' over 'search') if already set. */
 export async function upsertTrackedRoute(
   route: SearchParams,
   source: RouteSource = "search",
@@ -163,7 +166,11 @@ export async function upsertTrackedRoute(
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(origin, destination, month, trip, min_gap, max_gap, cabin)
           DO UPDATE SET
-            source = CASE WHEN tracked_routes.source = 'plan' THEN 'plan' ELSE excluded.source END,
+            source = CASE
+              WHEN tracked_routes.source = 'plan' THEN 'plan'
+              WHEN tracked_routes.source = 'config' AND excluded.source = 'search' THEN 'config'
+              ELSE excluded.source
+            END,
             last_requested_at = excluded.last_requested_at
           RETURNING last_dispatched_at, last_scraped_at`,
     args: [route.origin, route.destination, route.month, route.trip, route.minGap, route.maxGap, route.cabin, source, nowIso],
@@ -173,6 +180,33 @@ export async function upsertTrackedRoute(
     lastDispatchedAt: row?.last_dispatched_at != null ? String(row.last_dispatched_at) : null,
     lastScrapedAt: row?.last_scraped_at != null ? String(row.last_scraped_at) : null,
   };
+}
+
+/**
+ * Opportunistically prunes up to `limit` anonymous (non-config, non-plan) tracked_routes rows
+ * not requested in the last 30 days.
+ */
+export async function pruneTrackedRoutes(nowMs = Date.now(), limit = ANON_PRUNE_BATCH): Promise<number> {
+  const cutoffIso = new Date(nowMs - ANON_PRUNE_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const client = await getClient();
+  const rs = await client.execute({
+    sql: `DELETE FROM tracked_routes
+          WHERE rowid IN (
+            SELECT tr.rowid FROM tracked_routes tr
+            WHERE tr.source = 'search'
+              AND tr.last_requested_at < ?
+              AND NOT EXISTS (
+                SELECT 1 FROM plans p
+                WHERE p.origin = tr.origin AND p.destination = tr.destination
+                  AND p.month = tr.month AND p.trip = tr.trip
+                  AND p.min_gap = tr.min_gap AND p.max_gap = tr.max_gap
+                  AND p.cabin = tr.cabin
+              )
+            LIMIT ?
+          )`,
+    args: [cutoffIso, limit],
+  });
+  return rs.rowsAffected ?? 0;
 }
 
 /** Marks a tracked route as scraped at `scrapedAtIso`. */
@@ -194,9 +228,39 @@ export interface TrackRouteOptions {
   githubRepo?: string;
 }
 
+async function computeLegFreshness(
+  origin: string,
+  destination: string,
+  cabin: string,
+  from: string,
+  to: string,
+  freshCutoffIso: string,
+): Promise<{ covered: boolean; newestScrapedAt: string | null }> {
+  const expectedDates = diffDays(from, to) + 1;
+  if (expectedDates <= 0) {
+    return { covered: false, newestScrapedAt: null };
+  }
+  const client = await getClient();
+  const rs = await client.execute({
+    sql: `SELECT COUNT(DISTINCT travel_date) AS fresh_days, MAX(scraped_at) AS newest
+          FROM fares
+          WHERE origin = ? AND destination = ? AND cabin = ?
+            AND travel_date BETWEEN ? AND ?
+            AND status = 'ok' AND price IS NOT NULL
+            AND scraped_at > ?`,
+    args: [origin, destination, cabin, from, to, freshCutoffIso],
+  });
+  const freshDays = Number(rs.rows[0]?.fresh_days ?? 0);
+  const newest = rs.rows[0]?.newest != null ? String(rs.rows[0].newest) : null;
+  return {
+    covered: freshDays / expectedDates >= FRESH_COVERAGE_THRESHOLD,
+    newestScrapedAt: newest,
+  };
+}
+
 /**
- * Upserts the route in tracked_routes, checks freshness/cooldown/rate-limits/credentials,
- * and dispatches a GitHub Actions workflow when eligible.
+ * Checks horizon, prunes stale anonymous routes, evaluates per-leg freshness/cooldown/rate-limits/credentials,
+ * and only persists + atomically claims cooldown + dispatches GitHub Actions when admitted.
  */
 export async function trackRoute(route: SearchParams, options?: TrackRouteOptions): Promise<TrackResult> {
   const nowMs =
@@ -205,40 +269,63 @@ export async function trackRoute(route: SearchParams, options?: TrackRouteOption
       : typeof options?.now === "number"
         ? options.now
         : Date.now();
-  const nowIso = new Date(nowMs).toISOString();
+  const nowDate = new Date(nowMs);
+  const nowIso = nowDate.toISOString();
+  const currentMonth = nowIso.slice(0, 7);
+  const maxMonth = maxAllowedMonth(nowDate);
 
-  const { lastDispatchedAt, lastScrapedAt: routeScrapedAt } = await upsertTrackedRoute(route, "search", nowIso);
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(route.month) || route.month < currentMonth || route.month > maxMonth) {
+    throw new Error("Route month must be between the current month and 12 months ahead");
+  }
+
+  await pruneTrackedRoutes(nowMs);
 
   const client = await getClient();
-  const { first, last } = monthBounds(route.month);
-  const inFrom = addDays(first, route.minGap);
-  const inTo = addDays(last, route.maxGap);
-
-  const fareRs = await client.execute({
-    sql: `SELECT MAX(scraped_at) AS newest FROM fares
-          WHERE cabin = ? AND status = 'ok' AND price IS NOT NULL
-            AND ((origin = ? AND destination = ? AND travel_date BETWEEN ? AND ?)
-              OR (? = 'round' AND origin = ? AND destination = ? AND travel_date BETWEEN ? AND ?))`,
-    args: [route.cabin, route.origin, route.destination, first, last, route.trip, route.destination, route.origin, inFrom, inTo],
+  const existingRs = await client.execute({
+    sql: `SELECT last_dispatched_at, last_scraped_at FROM tracked_routes
+          WHERE origin = ? AND destination = ? AND month = ? AND trip = ?
+            AND min_gap = ? AND max_gap = ? AND cabin = ?`,
+    args: [route.origin, route.destination, route.month, route.trip, route.minGap, route.maxGap, route.cabin],
   });
+  const existingRow = existingRs.rows[0];
+  const prevDispatchedAt = existingRow?.last_dispatched_at != null ? String(existingRow.last_dispatched_at) : null;
+  const routeScrapedAt = existingRow?.last_scraped_at != null ? String(existingRow.last_scraped_at) : null;
 
-  const fareNewest = fareRs.rows[0]?.newest != null ? String(fareRs.rows[0].newest) : null;
+  const { first, last } = monthBounds(route.month);
+  const freshCutoffIso = new Date(nowMs - FRESH_TTL_MS).toISOString();
+
+  const outFresh = await computeLegFreshness(route.origin, route.destination, route.cabin, first, last, freshCutoffIso);
+  let faresFreshAt: string | null = null;
+  if (route.trip === "oneway") {
+    if (outFresh.covered) {
+      faresFreshAt = outFresh.newestScrapedAt;
+    }
+  } else {
+    const inFrom = addDays(first, route.minGap);
+    const inTo = addDays(last, route.maxGap);
+    const inFresh = await computeLegFreshness(route.destination, route.origin, route.cabin, inFrom, inTo, freshCutoffIso);
+    if (outFresh.covered && inFresh.covered && outFresh.newestScrapedAt && inFresh.newestScrapedAt) {
+      faresFreshAt =
+        outFresh.newestScrapedAt < inFresh.newestScrapedAt ? outFresh.newestScrapedAt : inFresh.newestScrapedAt;
+    }
+  }
+
   const newestScrapedAt =
-    fareNewest && routeScrapedAt
-      ? fareNewest > routeScrapedAt
-        ? fareNewest
+    faresFreshAt && routeScrapedAt
+      ? faresFreshAt > routeScrapedAt
+        ? faresFreshAt
         : routeScrapedAt
-      : (fareNewest ?? routeScrapedAt);
+      : (faresFreshAt ?? routeScrapedAt);
 
   const token = (options?.githubToken ?? process.env.GITHUB_DISPATCH_TOKEN ?? "").trim();
   const repo = (options?.githubRepo ?? process.env.GITHUB_REPO ?? "").trim();
   const hasCredentials = Boolean(token && repo);
 
-  // Pre-check freshness, 30m cooldown, and credentials before consuming rate-limit tokens
+  // Pre-check freshness, 30m cooldown, and credentials before consuming rate-limit tokens or writing tracked_routes
   const preDecision = decideTrackDispatch({
     nowMs,
     lastScrapedAt: newestScrapedAt,
-    lastDispatchedAt,
+    lastDispatchedAt: prevDispatchedAt,
     hasCredentials,
     globalAllowed: true,
     clientAllowed: true,
@@ -247,6 +334,7 @@ export async function trackRoute(route: SearchParams, options?: TrackRouteOption
     return preDecision;
   }
 
+  // Without TRUSTED_PROXY=1 all visitors share one client bucket (intentional conservative policy).
   const clientIp = options?.clientKey ?? "shared";
   const clientRl = await rateLimit(ipRateLimitKey("dispatch", clientIp), CLIENT_DISPATCH_LIMIT, DISPATCH_WINDOW_SECONDS, nowMs);
   const globalRl = clientRl.allowed
@@ -256,7 +344,7 @@ export async function trackRoute(route: SearchParams, options?: TrackRouteOption
   const decision = decideTrackDispatch({
     nowMs,
     lastScrapedAt: newestScrapedAt,
-    lastDispatchedAt,
+    lastDispatchedAt: prevDispatchedAt,
     hasCredentials,
     globalAllowed: globalRl.allowed,
     clientAllowed: clientRl.allowed,
@@ -266,18 +354,60 @@ export async function trackRoute(route: SearchParams, options?: TrackRouteOption
     return decision;
   }
 
-  await dispatchGitHubScrape(route, {
-    fetch: options?.fetch,
-    githubToken: token,
-    githubRepo: repo,
+  // Admitted: persist/refresh tracked_routes and atomically claim the 30m dispatch cooldown
+  await upsertTrackedRoute(route, "search", nowIso);
+
+  const cooldownCutoffIso = new Date(nowMs - DISPATCH_COOLDOWN_MS).toISOString();
+  const claimRs = await client.execute({
+    sql: `UPDATE tracked_routes
+          SET last_dispatched_at = ?
+          WHERE origin = ? AND destination = ? AND month = ? AND trip = ?
+            AND min_gap = ? AND max_gap = ? AND cabin = ?
+            AND (last_dispatched_at IS NULL OR last_dispatched_at <= ?)`,
+    args: [
+      nowIso,
+      route.origin,
+      route.destination,
+      route.month,
+      route.trip,
+      route.minGap,
+      route.maxGap,
+      route.cabin,
+      cooldownCutoffIso,
+    ],
   });
 
-  await client.execute({
-    sql: `UPDATE tracked_routes SET last_dispatched_at = ?
-          WHERE origin = ? AND destination = ? AND month = ? AND trip = ?
-            AND min_gap = ? AND max_gap = ? AND cabin = ?`,
-    args: [nowIso, route.origin, route.destination, route.month, route.trip, route.minGap, route.maxGap, route.cabin],
-  });
+  if ((claimRs.rowsAffected ?? 0) === 0) {
+    return { status: "throttled", etaMinutes: null };
+  }
+
+  try {
+    await dispatchGitHubScrape(route, {
+      fetch: options?.fetch,
+      githubToken: token,
+      githubRepo: repo,
+    });
+  } catch (err) {
+    await client.execute({
+      sql: `UPDATE tracked_routes
+            SET last_dispatched_at = ?
+            WHERE origin = ? AND destination = ? AND month = ? AND trip = ?
+              AND min_gap = ? AND max_gap = ? AND cabin = ?
+              AND last_dispatched_at = ?`,
+      args: [
+        prevDispatchedAt,
+        route.origin,
+        route.destination,
+        route.month,
+        route.trip,
+        route.minGap,
+        route.maxGap,
+        route.cabin,
+        nowIso,
+      ],
+    });
+    throw err;
+  }
 
   return decision;
 }

@@ -1,3 +1,5 @@
+import type { Cabin } from "../types.ts";
+
 export interface ParsedFare {
   price: number;
   airline: string | null;
@@ -120,7 +122,13 @@ export function findCheapestRowIndex(rows: string[]): number {
  * rows: innerText of each flight list item; body: full page text; expandedRow: optional innerText of the expanded cheapest row.
  * Takes the cheapest row, and the "Cheapest from" tab as a lower bound when it undercuts the visible rows.
  */
-export function parseResults(url: string, body: string, rows: string[], expandedRow?: string): ParseOutcome {
+export function parseResults(
+  url: string,
+  body: string,
+  rows: string[],
+  expandedRow?: string,
+  cabin: Cabin = "economy",
+): ParseOutcome {
   if (isBlocked(url, body)) return { status: "blocked" };
 
   let best: ParsedFare | null = null;
@@ -196,6 +204,14 @@ export function parseResults(url: string, body: string, rows: string[], expanded
       flightNo: null,
       aircraft: null,
     };
+  }
+
+  if (best && cabin === "business") {
+    const hasBusinessIndication =
+      rows.some((r) => /business/i.test(r)) || (expandedRow != null && /business/i.test(expandedRow));
+    if (!hasBusinessIndication) {
+      return { status: "parse_error" };
+    }
   }
 
   if (best) return { status: "ok", fare: best };

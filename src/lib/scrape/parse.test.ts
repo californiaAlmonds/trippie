@@ -115,6 +115,7 @@ test("parseResults parses real captured Google Flights fixtures (economy nonstop
     "body",
     [fixtures.business_one_stop.collapsed],
     fixtures.business_one_stop.expanded,
+    "business",
   );
   assert.deepEqual(biz, {
     status: "ok",
@@ -130,6 +131,16 @@ test("parseResults parses real captured Google Flights fixtures (economy nonstop
       aircraft: "Airbus A321neo",
     },
   });
+
+  // Business-cabin sanity check: economy-only rows with cabin='business' return parse_error instead of storing economy price
+  const bizMissingIndication = parseResults(
+    "https://www.google.com/travel/flights?q=x",
+    "body",
+    [fixtures.economy_nonstop.collapsed],
+    fixtures.economy_nonstop.expanded,
+    "business",
+  );
+  assert.deepEqual(bizMissingIndication, { status: "parse_error" });
 
   // 5. ATR 72 aircraft where digits abut airline code ("ATR 726E\u00a07435")
   assert.deepEqual(parseExpandedDetails("IndiGoEconomyATR 726E\u00a07435"), {

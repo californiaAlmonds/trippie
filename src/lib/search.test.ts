@@ -21,18 +21,28 @@ test("parseSearch accepts trip=oneway without minGap/maxGap and sets gaps to 0",
   assert.ok("error" in parseSearch(new URLSearchParams("origin=BLR&destination=IXZ&month=2027-02&trip=oneway&cabin=first")));
 });
 
-test("parseSearch rejects invalid trip values", () => {
+test("parseSearch rejects invalid trip values and months beyond the 12-month horizon", () => {
   const res = parseSearch(new URLSearchParams("origin=BLR&destination=IXZ&month=2027-02&trip=foo&minGap=5&maxGap=7"));
   assert.ok("error" in res);
+
+  const now = new Date("2026-10-17T12:00:00.000Z");
+  const past = parseSearch(new URLSearchParams("origin=BLR&destination=IXZ&month=2026-09&trip=oneway"), now);
+  assert.ok("error" in past);
+
+  const atHorizon = parseSearch(new URLSearchParams("origin=BLR&destination=IXZ&month=2027-10&trip=oneway"), now);
+  assert.ok(!("error" in atHorizon));
+
+  const beyondHorizon = parseSearch(new URLSearchParams("origin=BLR&destination=IXZ&month=2027-11&trip=oneway"), now);
+  assert.ok("error" in beyondHorizon);
 });
 
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runSearch } from "./search.ts";
-import { getBestWindowStats, getClient, getFreshness, getRouteStats, saveFares } from "./store.ts";
+import { getBestWindowStats, getClient, getFreshness, getOneWayStats, getRouteStats, saveFares } from "./store.ts";
 
-test("getRouteStats, getBestWindowStats, getFreshness, and runSearch return accurate stats and freshness per cabin", async () => {
+test("getRouteStats, getOneWayStats, getBestWindowStats, getFreshness, and runSearch return accurate stats and freshness per cabin", async () => {
   const dir = mkdtempSync(join(tmpdir(), "trippie-search-"));
   const dbPath = join(dir, "search.db").replace(/\\/g, "/");
   const prevUrl = process.env.TURSO_DATABASE_URL;
@@ -150,7 +160,7 @@ test("getRouteStats, getBestWindowStats, getFreshness, and runSearch return accu
       },
     ]);
 
-    // Outbound stats: [5000, 6000, 7000, 9000]
+    // All-snapshot route stats (used for round-trip leg stats): [5000, 6000, 7000, 9000]
     const outStats = await getRouteStats("CCU", "BLR", "2027-02-01", "2027-02-28", "economy");
     assert.deepEqual(outStats, {
       min: 5000,
@@ -158,6 +168,17 @@ test("getRouteStats, getBestWindowStats, getFreshness, and runSearch return accu
       p25: 5750,
       median: 6500,
       samples: 4,
+      since: "2026-10-15",
+    });
+
+    // One-way current per-day stats (latest snapshot per travel date: 2027-02-10=7000, 2027-02-11=6000, 2027-02-12=9000)
+    const oneWayStats = await getOneWayStats("CCU", "BLR", "2027-02-01", "2027-02-28", "economy");
+    assert.deepEqual(oneWayStats, {
+      min: 6000,
+      max: 9000,
+      p25: 6500,
+      median: 7000,
+      samples: 3,
       since: "2026-10-15",
     });
 
@@ -203,7 +224,7 @@ test("getRouteStats, getBestWindowStats, getFreshness, and runSearch return accu
     );
     assert.equal(freshDone.collecting, false);
 
-    // runSearch oneway includes stats (total === outbound, inbound === null), freshness, cabin, and detail fields
+    // runSearch oneway includes stats computed from per-day current cheapest fares (total === outbound === oneWayStats, inbound === null)
     const onewayRes = await runSearch({
       origin: "CCU",
       destination: "BLR",
@@ -214,9 +235,10 @@ test("getRouteStats, getBestWindowStats, getFreshness, and runSearch return accu
       cabin: "economy",
     });
     assert.equal(onewayRes.cabin, "economy");
-    assert.deepEqual(onewayRes.stats.outbound, outStats);
+    assert.deepEqual(onewayRes.stats.outbound, oneWayStats);
     assert.equal(onewayRes.stats.inbound, null);
-    assert.deepEqual(onewayRes.stats.total, outStats);
+    assert.deepEqual(onewayRes.stats.total, oneWayStats);
+    assert.equal(onewayRes.days[0]?.price, oneWayStats.min);
     assert.equal(onewayRes.freshness.lastCheckedAt, "2026-10-16T08:02:00.000Z");
 
     const feb10 = onewayRes.outbound.find((d) => d.date === "2027-02-10")!;

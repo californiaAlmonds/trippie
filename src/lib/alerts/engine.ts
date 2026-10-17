@@ -473,13 +473,11 @@ export async function runAlerts(options?: AlertRunOptions): Promise<AlertRunSumm
     const canPush = pushChannelAvailable && deviceTokens.length > 0;
 
     if (!canEmail && !canPush) {
-      await updateSeenOnly(false);
       skip("no channel");
       continue;
     }
 
     if (sent >= maxEmails) {
-      await updateSeenOnly(false);
       skip("cap reached");
       continue;
     }
@@ -504,7 +502,6 @@ export async function runAlerts(options?: AlertRunOptions): Promise<AlertRunSumm
     );
 
     if ((claimRs.rowsAffected ?? 0) === 0) {
-      await updateSeenOnly(false);
       skip("already claimed");
       continue;
     }
@@ -546,19 +543,10 @@ export async function runAlerts(options?: AlertRunOptions): Promise<AlertRunSumm
     if (!delivered) {
       failed++;
       await withBusyRetry(() =>
-        client.batch(
-          [
-            {
-              sql: "UPDATE alert_deliveries SET status = 'failed' WHERE plan_id = ? AND day = ?",
-              args: [plan.id, today],
-            },
-            {
-              sql: "UPDATE plans SET last_seen_price = ? WHERE id = ? AND revision = ?",
-              args: [B, plan.id, plan.revision],
-            },
-          ],
-          "write",
-        ),
+        client.execute({
+          sql: "UPDATE alert_deliveries SET status = 'failed' WHERE plan_id = ? AND day = ?",
+          args: [plan.id, today],
+        }),
       );
       continue;
     }

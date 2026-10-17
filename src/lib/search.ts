@@ -1,10 +1,17 @@
 import { isKnownAirport } from "./geo/airports.ts";
 import { getProvider } from "./providers/index.ts";
-import { dbConfigured, getBestWindowStats, getFreshness, getRouteStats } from "./store.ts";
+import { dbConfigured, getBestWindowStats, getFreshness, getOneWayStats, getRouteStats } from "./store.ts";
 import type { Cabin, DayFare, PriceStats, RouteFreshness, TripWindow } from "./types.ts";
 import { addDays, computeWindows, monthBounds } from "./windows.ts";
 
 export type TripMode = "round" | "oneway";
+
+export const MAX_FUTURE_MONTHS = 12;
+
+export function maxAllowedMonth(now = new Date()): string {
+  const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + MAX_FUTURE_MONTHS, 1));
+  return d.toISOString().slice(0, 7);
+}
 
 export interface SearchParams {
   origin: string;
@@ -35,7 +42,7 @@ export interface SearchResult {
   freshness: RouteFreshness;
 }
 
-export function parseSearch(sp: URLSearchParams): SearchParams | { error: string } {
+export function parseSearch(sp: URLSearchParams, now = new Date()): SearchParams | { error: string } {
   const origin = (sp.get("origin") ?? "").toUpperCase();
   const destination = (sp.get("destination") ?? "").toUpperCase();
   const month = sp.get("month") ?? "";
@@ -45,7 +52,9 @@ export function parseSearch(sp: URLSearchParams): SearchParams | { error: string
   if (!isKnownAirport(origin) || !isKnownAirport(destination)) return { error: "Unknown airport" };
   if (origin === destination) return { error: "Origin and destination must differ" };
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return { error: "month must be YYYY-MM" };
-  if (month < new Date().toISOString().slice(0, 7)) return { error: "month is in the past" };
+  const currentMonth = now.toISOString().slice(0, 7);
+  if (month < currentMonth) return { error: "month is in the past" };
+  if (month > maxAllowedMonth(now)) return { error: "month is more than 12 months ahead" };
   if (trip !== "round" && trip !== "oneway") return { error: "trip must be round or oneway" };
   if (cabin !== "economy" && cabin !== "business") return { error: "cabin must be economy or business" };
   if (trip === "oneway") return { origin, destination, month, trip, minGap: 0, maxGap: 0, cabin };
@@ -71,7 +80,7 @@ export async function runSearch(p: SearchParams, limit = 60): Promise<SearchResu
         getFreshness(p),
         (async () => {
           if (p.trip === "oneway") {
-            const outStats = await getRouteStats(p.origin, p.destination, first, last, p.cabin);
+            const outStats = await getOneWayStats(p.origin, p.destination, first, last, p.cabin);
             return { outbound: outStats, inbound: null, total: outStats };
           }
           const [outStats, inStats, totalStats] = await Promise.all([
