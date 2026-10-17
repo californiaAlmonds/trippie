@@ -1,6 +1,8 @@
+"use client";
+
 import { useEffect, useId, useState } from "react";
-import type { TripWindow } from "@/lib/types";
-import { inr } from "./format";
+import type { Cabin, TripWindow } from "@/lib/types";
+import { useCurrency } from "./currency/CurrencyProvider";
 import { SparklineEmptyIcon } from "./icons";
 
 interface Point {
@@ -12,6 +14,7 @@ interface HistoryPanelProps {
   window: TripWindow;
   origin: string;
   destination: string;
+  cabin?: Cabin;
 }
 
 function buildSmoothPaths(coords: { x: number; y: number }[], bottomY: number) {
@@ -39,7 +42,9 @@ export default function HistoryPanel({
   window: w,
   origin,
   destination,
+  cabin = "economy",
 }: HistoryPanelProps) {
+  const { format } = useCurrency();
   const [points, setPoints] = useState<Point[] | null>(null);
   const gradId = useId();
 
@@ -52,6 +57,7 @@ export default function HistoryPanel({
       maxGap: String(w.gap),
       depart: w.depart.date,
       return: w.ret.date,
+      cabin,
     });
     let stale = false;
     fetch(`/api/history?${qs}`)
@@ -61,7 +67,7 @@ export default function HistoryPanel({
     return () => {
       stale = true;
     };
-  }, [w, origin, destination]);
+  }, [w, origin, destination, cabin]);
 
   if (!points) return null;
 
@@ -150,11 +156,11 @@ export default function HistoryPanel({
             <span>
               low{" "}
               <strong className="font-semibold text-[var(--text-primary)]">
-                {inr.format(lo)}
+                {format(lo)}
               </strong>
               , high{" "}
               <strong className="font-semibold text-[var(--text-primary)]">
-                {inr.format(hi)}
+                {format(hi)}
               </strong>
             </span>
           </div>

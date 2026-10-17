@@ -1,4 +1,5 @@
 import type { TripMode } from "@/lib/search";
+import type { Cabin } from "@/lib/types";
 
 export interface Query {
   origin: string;
@@ -7,6 +8,7 @@ export interface Query {
   trip: TripMode;
   minGap: number;
   maxGap: number;
+  cabin?: Cabin;
 }
 
 const RECENT_KEY = "trippie.recent";
@@ -21,6 +23,18 @@ export const readRecent = () => localStorage.getItem(RECENT_KEY) ?? "[]";
 
 export const serverSnapshotRecent = () => "[]";
 
+function normalizeQuery(q: Query): Query & { cabin: Cabin } {
+  return {
+    origin: q.origin,
+    destination: q.destination,
+    month: q.month,
+    trip: q.trip ?? "round",
+    minGap: q.minGap,
+    maxGap: q.maxGap,
+    cabin: q.cabin === "business" ? "business" : "economy",
+  };
+}
+
 export function parseRecent(raw: string): Query[] {
   try {
     const list: unknown = JSON.parse(raw);
@@ -32,6 +46,7 @@ export function parseRecent(raw: string): Query[] {
         typeof q.destination === "string" &&
         typeof q.month === "string" &&
         (q.trip === undefined || q.trip === "round" || q.trip === "oneway") &&
+        (q.cabin === undefined || q.cabin === "economy" || q.cabin === "business") &&
         Number.isInteger(q.minGap) &&
         Number.isInteger(q.maxGap)
       ) {
@@ -42,6 +57,7 @@ export function parseRecent(raw: string): Query[] {
           trip: q.trip ?? "round",
           minGap: q.minGap,
           maxGap: q.maxGap,
+          cabin: q.cabin === "business" ? "business" : "economy",
         });
       }
     }
@@ -52,8 +68,10 @@ export function parseRecent(raw: string): Query[] {
 }
 
 export function pushRecent(q: Query) {
-  const same = (r: Query) => JSON.stringify(r) === JSON.stringify(q);
-  const next = [q, ...parseRecent(readRecent()).filter((r) => !same(r))].slice(0, 5);
+  const norm = normalizeQuery(q);
+  const same = (r: Query) =>
+    JSON.stringify(normalizeQuery(r)) === JSON.stringify(norm);
+  const next = [norm, ...parseRecent(readRecent()).filter((r) => !same(r))].slice(0, 5);
   localStorage.setItem(RECENT_KEY, JSON.stringify(next));
   listeners.forEach((l) => l());
 }

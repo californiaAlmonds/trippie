@@ -1,7 +1,10 @@
+"use client";
+
 import { useMemo } from "react";
 import type { TripMode } from "@/lib/search";
 import { addDays, monthBounds } from "@/lib/windows";
-import { fmtDate, inr } from "./format";
+import { useCurrency } from "./currency/CurrencyProvider";
+import { fmtDate } from "./format";
 
 interface CalendarEntry {
   date: string;
@@ -21,9 +24,18 @@ function monthDays(month: string): string[] {
   return days;
 }
 
+function formatCellPrice(converted: number, currency: string, format: (inr: number) => string, inrAmount: number): string {
+  if (currency === "INR" || converted >= 1000) {
+    const k = Math.round(converted / 100) / 10;
+    return `${currency === "INR" ? "" : "≈"}${k}k`;
+  }
+  return format(inrAmount);
+}
+
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
 
 export default function PriceCalendar({ trip, calendar }: PriceCalendarProps) {
+  const { currency, format, convert } = useCurrency();
   const calendarByDate = useMemo(
     () => new Map(calendar.map((c) => [c.date, c])),
     [calendar],
@@ -92,11 +104,12 @@ export default function PriceCalendar({ trip, calendar }: PriceCalendarProps) {
           const t = min > 0 ? Math.min(1, (c.total - min) / (min * 0.25)) : 0;
           const hue = Math.round(150 - 130 * t);
           const weight = Math.round(t * 100);
+          const converted = convert(c.total);
 
           return (
             <div
               key={date}
-              title={`${fmtDate(c.date)}: ${inr.format(c.total)}${
+              title={`${fmtDate(c.date)}: ${format(c.total)}${
                 c.gap ? ` (${c.gap} days)` : ""
               }`}
               className="flex flex-col items-center justify-center rounded-xl ring-1 ring-inset ring-[var(--heat-ring)] py-2 px-1 text-center text-xs shadow-2xs transition-transform hover:scale-[1.03]"
@@ -109,7 +122,7 @@ export default function PriceCalendar({ trip, calendar }: PriceCalendarProps) {
                 {c.date.slice(8)}
               </div>
               <div className="mt-0.5 text-[11px] font-medium tabular-nums opacity-90 leading-tight">
-                {Math.round(c.total / 100) / 10}k
+                {formatCellPrice(converted, currency, format, c.total)}
               </div>
             </div>
           );

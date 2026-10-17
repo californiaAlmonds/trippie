@@ -1,32 +1,30 @@
 "use client";
 
-import { type FormEvent, useId, useRef, useState } from "react";
-import { AIRPORTS } from "@/lib/airports";
+import { useId, useRef, useState } from "react";
 import { useAccount } from "../account/AccountProvider";
 import type { Plan } from "../account/api";
 import { useFocusTrap } from "../account/useFocusTrap";
-import { inr } from "../format";
+import { lookupKnownAirportCity } from "../AirportPicker";
+import { useCurrency } from "../currency/CurrencyProvider";
 import { AlertIcon, BellIcon, CloseIcon, TrashIcon } from "../icons";
-import { parseTargetPriceInput } from "./SavePlanControl";
-
-function airportCity(code: string): string {
-  return AIRPORTS.find((a) => a.code === code)?.name ?? code;
-}
+import PriceLimitSlider, {
+  clampAndRoundInr,
+  computeDefaultTargetInr,
+} from "./PriceLimitSlider";
 
 function PlanCard({ plan }: { plan: Plan }) {
   const { user, updatePlan, deletePlan, searchAgain } = useAccount();
+  const { format } = useCurrency();
 
-  const [editingTarget, setEditingTarget] = useState(false);
-  const [targetDraft, setTargetDraft] = useState(
-    plan.targetPrice !== null ? String(plan.targetPrice) : "",
+  const [limitOpen, setLimitOpen] = useState(plan.targetPrice !== null);
+  const [targetInr, setTargetInr] = useState<number>(
+    plan.targetPrice !== null
+      ? plan.targetPrice
+      : computeDefaultTargetInr(null, plan.lastSeenPrice ?? plan.lastAlertPrice ?? 12_000),
   );
-  const [targetError, setTargetError] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [itemError, setItemError] = useState("");
   const [busy, setBusy] = useState(false);
-
-  const targetInputId = useId();
-  const targetErrId = useId();
 
   const stayLabel =
     plan.trip === "oneway"
@@ -34,6 +32,8 @@ function PlanCard({ plan }: { plan: Plan }) {
       : plan.minGap === plan.maxGap
         ? `${plan.minGap} days`
         : `${plan.minGap}-${plan.maxGap} days`;
+
+  const cabinLabel = (plan.cabin ?? "economy") === "business" ? "Business" : "Economy";
 
   async function handleToggleAlert() {
     if (!user?.verified || plan.expired || busy) return;
@@ -51,21 +51,43 @@ function PlanCard({ plan }: { plan: Plan }) {
     }
   }
 
-  async function handleSaveTarget(e: FormEvent) {
-    e.preventDefault();
-    setTargetError("");
+  async function handleToggleLimit() {
+    if (plan.expired || busy) return;
     setItemError("");
+    const nextEnabled = !limitOpen;
+    setLimitOpen(nextEnabled);
 
-    const parsed = parseTargetPriceInput(targetDraft);
-    if (!parsed.valid) {
-      setTargetError(parsed.error ?? "Invalid target price.");
-      return;
+    const nextTarget = nextEnabled
+      ? clampAndRoundInr(
+          plan.targetPrice ??
+            targetInr ??
+            computeDefaultTargetInr(null, plan.lastSeenPrice ?? 12_000),
+        )
+      : null;
+
+    if (nextTarget !== null) {
+      setTargetInr(nextTarget);
     }
 
-    setEditingTarget(false);
     setBusy(true);
     try {
-      const res = await updatePlan(plan.id, { targetPrice: parsed.value });
+      const res = await updatePlan(plan.id, { targetPrice: nextTarget });
+      if (!res.ok) {
+        setItemError(res.error ?? "Could not update target price.");
+        setLimitOpen(plan.targetPrice !== null);
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleSaveSliderLimit(nextInr: number) {
+    const clamped = clampAndRoundInr(nextInr);
+    setTargetInr(clamped);
+    setItemError("");
+    setBusy(true);
+    try {
+      const res = await updatePlan(plan.id, { targetPrice: clamped });
       if (!res.ok) {
         setItemError(res.error ?? "Could not update target price.");
       }
@@ -88,6 +110,8 @@ function PlanCard({ plan }: { plan: Plan }) {
     }
   }
 
+  const displayedTarget = plan.targetPrice ?? (limitOpen ? targetInr : null);
+
   return (
     <li className="glass-subtle rounded-2xl p-4 grid gap-3">
       <div className="flex items-start justify-between gap-2">
@@ -102,6 +126,9 @@ function PlanCard({ plan }: { plan: Plan }) {
             <span className="inline-flex items-center rounded-full bg-slate-500/10 px-2 py-0.5 text-[11px] font-medium text-[var(--text-secondary)]">
               {stayLabel}
             </span>
+            <span className="inline-flex items-center rounded-full bg-slate-500/10 px-2 py-0.5 text-[11px] font-medium text-[var(--text-secondary)]">
+              {cabinLabel}
+            </span>
             {plan.expired && (
               <span className="inline-flex items-center rounded-full border border-[var(--delta-amber-border)] bg-[var(--delta-amber-bg)] px-2 py-0.5 text-[11px] font-semibold text-[var(--delta-amber-text)]">
                 Expired
@@ -109,10 +136,29 @@ function PlanCard({ plan }: { plan: Plan }) {
             )}
           </div>
           <p className="mt-0.5 text-xs text-[var(--text-muted)]">
-            {airportCity(plan.origin)} to {airportCity(plan.destination)}
+            {lookupKnownAirportCity(plan.origin)} to {lookupKnownAirportCity(plan.destination)}
           </p>
         </div>
       </div>
+
+      {/* Last checked / Last alert summary */}
+      {(plan.lastSeenPrice != null || plan.lastAlertPrice != null) && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--text-secondary)] tabular-nums">
+          {plan.lastSeenPrice != null && (
+            <span>
+              Last checked price:{" "}
+              <strong className="font-semibold text-[var(--text-primary)]">
+                {format(plan.lastSeenPrice)}
+              </strong>
+            </span>
+          )}
+          {plan.lastAlertPrice != null && (
+            <span className="text-[11px] text-[var(--text-muted)]">
+              Last alert: {format(plan.lastAlertPrice)}
+            </span>
+          )}
+        </div>
+      )}
 
       {itemError && (
         <div
@@ -124,18 +170,20 @@ function PlanCard({ plan }: { plan: Plan }) {
         </div>
       )}
 
-      {/* Alert toggle + target price */}
-      <div className="grid gap-2 rounded-xl border border-[var(--glass-border-subtle)] bg-white/20 dark:bg-white/[0.02] p-3">
+      {/* Alert toggle + optional limit slider */}
+      <div className="grid gap-2.5 rounded-xl border border-[var(--glass-border-subtle)] bg-white/20 dark:bg-white/[0.02] p-3">
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2 min-w-0">
               <BellIcon className="h-4 w-4 shrink-0 text-[var(--accent)]" />
               <span className="text-xs font-medium text-[var(--text-primary)]">
-                Alert me when the price drops
+                Price alerts
               </span>
             </div>
             <p className="mt-0.5 text-[11px] text-[var(--text-secondary)]">
-              By email, and on your phone if notifications are on
+              {displayedTarget !== null
+                ? `We'll notify you when it goes below ${format(displayedTarget)}.`
+                : "We'll notify you when the price drops."}
             </p>
           </div>
 
@@ -146,17 +194,21 @@ function PlanCard({ plan }: { plan: Plan }) {
             aria-label={`Price drop alert for ${plan.origin} to ${plan.destination}`}
             disabled={!user?.verified || plan.expired || busy}
             onClick={handleToggleAlert}
-            className={`focus-ring relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
-              plan.alertEnabled
-                ? "bg-[var(--accent)]"
-                : "bg-slate-400/40 dark:bg-slate-600/60"
-            }`}
+            className="focus-ring inline-flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-end cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <span
-              className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-xs transition-transform ${
-                plan.alertEnabled ? "translate-x-5" : "translate-x-0.5"
+              className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors ${
+                plan.alertEnabled
+                  ? "bg-[var(--accent)]"
+                  : "bg-slate-400/40 dark:bg-slate-600/60"
               }`}
-            />
+            >
+              <span
+                className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-xs transition-transform ${
+                  plan.alertEnabled ? "translate-x-6" : "translate-x-1"
+                }`}
+              />
+            </span>
           </button>
         </div>
 
@@ -166,97 +218,53 @@ function PlanCard({ plan }: { plan: Plan }) {
           </p>
         )}
 
-        {editingTarget ? (
-          <form onSubmit={handleSaveTarget} noValidate className="mt-1 grid gap-2">
-            <label
-              htmlFor={targetInputId}
-              className="text-[11px] font-medium text-[var(--text-secondary)]"
+        <div className="border-t border-[var(--glass-border-subtle)] pt-2.5 grid gap-2">
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-xs font-medium text-[var(--text-primary)]">
+              Only alert below a price
+              {displayedTarget !== null ? (
+                <span className="ml-1.5 font-semibold tabular-nums text-[var(--accent)]">
+                  ({format(displayedTarget)})
+                </span>
+              ) : null}
+            </span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={limitOpen}
+              aria-label={`Only alert below a price for ${plan.origin} to ${plan.destination}`}
+              disabled={plan.expired || busy}
+              onClick={handleToggleLimit}
+              className="focus-ring inline-flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-end cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              Target price (INR 500–10,00,000, or leave blank for any drop)
-            </label>
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="relative flex-1 min-w-[140px]">
-                <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-xs text-[var(--text-muted)]">
-                  ₹
-                </span>
-                <input
-                  id={targetInputId}
-                  type="number"
-                  inputMode="numeric"
-                  min={500}
-                  max={1000000}
-                  step={1}
-                  value={targetDraft}
-                  onChange={(e) => {
-                    setTargetDraft(e.target.value);
-                    if (targetError) setTargetError("");
-                  }}
-                  aria-invalid={Boolean(targetError)}
-                  aria-describedby={targetError ? targetErrId : undefined}
-                  placeholder="Any price drop"
-                  className="glass-field h-9 w-full rounded-xl pl-6 pr-2.5 text-xs tabular-nums text-[var(--text-primary)]"
+              <span
+                className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors ${
+                  limitOpen
+                    ? "bg-[var(--accent)]"
+                    : "bg-slate-400/40 dark:bg-slate-600/60"
+                }`}
+              >
+                <span
+                  className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-xs transition-transform ${
+                    limitOpen ? "translate-x-6" : "translate-x-1"
+                  }`}
                 />
-              </div>
-              <button
-                type="submit"
-                className="btn-accent focus-ring h-9 rounded-full px-3.5 text-xs font-semibold cursor-pointer"
-              >
-                Save
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setEditingTarget(false);
-                  setTargetError("");
-                }}
-                className="glass-field focus-ring h-9 rounded-full px-3 text-xs font-medium text-[var(--text-secondary)] cursor-pointer"
-              >
-                Cancel
-              </button>
-            </div>
-            {targetError && (
-              <p
-                id={targetErrId}
-                className="text-[11px] font-medium text-[var(--delta-red-text)]"
-              >
-                {targetError}
-              </p>
-            )}
-          </form>
-        ) : (
-          <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--text-secondary)]">
-            <div className="flex flex-wrap items-center gap-2">
-              <span>
-                Target:{" "}
-                <strong className="font-semibold tabular-nums text-[var(--text-primary)]">
-                  {plan.targetPrice !== null
-                    ? `Below ${inr.format(plan.targetPrice)}`
-                    : "Any drop"}
-                </strong>
               </span>
-              {plan.lastAlertPrice !== null && (
-                <span className="text-[11px] text-[var(--text-muted)] tabular-nums">
-                  · Last alert: {inr.format(plan.lastAlertPrice)}
-                </span>
-              )}
-            </div>
-            {!plan.expired && (
-              <button
-                type="button"
-                onClick={() => {
-                  setTargetDraft(
-                    plan.targetPrice !== null ? String(plan.targetPrice) : "",
-                  );
-                  setTargetError("");
-                  setEditingTarget(true);
-                }}
-                className="focus-ring rounded px-1.5 py-0.5 text-xs font-semibold text-[var(--accent)] hover:underline cursor-pointer"
-              >
-                Edit target
-              </button>
-            )}
+            </button>
           </div>
-        )}
+
+          {limitOpen && !plan.expired && (
+            <PriceLimitSlider
+              currentBest={plan.lastSeenPrice ?? plan.lastAlertPrice ?? null}
+              targetPriceInr={targetInr}
+              onChangeInr={(val) => {
+                void handleSaveSliderLimit(val);
+              }}
+              disabled={busy}
+              label={`Alert limit for ${plan.origin} to ${plan.destination}`}
+            />
+          )}
+        </div>
       </div>
 
       {/* Actions */}
@@ -271,9 +279,10 @@ function PlanCard({ plan }: { plan: Plan }) {
               trip: plan.trip,
               minGap: plan.trip === "oneway" ? 0 : plan.minGap,
               maxGap: plan.trip === "oneway" ? 0 : plan.maxGap,
+              cabin: plan.cabin ?? "economy",
             })
           }
-          className="glass-field focus-ring inline-flex items-center justify-center rounded-full px-3.5 py-1.5 text-xs font-semibold text-[var(--text-primary)] cursor-pointer"
+          className="glass-field focus-ring inline-flex min-h-[44px] items-center justify-center rounded-full px-4 py-1.5 text-xs font-semibold text-[var(--text-primary)] cursor-pointer"
         >
           Search again
         </button>
@@ -287,14 +296,14 @@ function PlanCard({ plan }: { plan: Plan }) {
               type="button"
               onClick={handleConfirmDelete}
               disabled={busy}
-              className="focus-ring rounded-full bg-red-600 hover:bg-red-700 px-3 py-1 text-xs font-semibold text-white cursor-pointer"
+              className="focus-ring min-h-[44px] rounded-full bg-red-600 hover:bg-red-700 px-3.5 py-1.5 text-xs font-semibold text-white cursor-pointer"
             >
               Confirm
             </button>
             <button
               type="button"
               onClick={() => setConfirmDelete(false)}
-              className="glass-field focus-ring rounded-full px-2.5 py-1 text-xs font-medium text-[var(--text-secondary)] cursor-pointer"
+              className="glass-field focus-ring min-h-[44px] rounded-full px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)] cursor-pointer"
             >
               Cancel
             </button>
@@ -303,7 +312,7 @@ function PlanCard({ plan }: { plan: Plan }) {
           <button
             type="button"
             onClick={() => setConfirmDelete(true)}
-            className="focus-ring inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium text-[var(--delta-red-text)] hover:bg-red-500/10 cursor-pointer"
+            className="focus-ring inline-flex min-h-[44px] items-center gap-1 rounded-full px-3 py-1.5 text-xs font-medium text-[var(--delta-red-text)] hover:bg-red-500/10 cursor-pointer"
           >
             <TrashIcon className="h-3.5 w-3.5" />
             <span>Delete</span>
@@ -357,7 +366,7 @@ export default function SavedPlansDrawer() {
             type="button"
             onClick={closePlans}
             aria-label="Close saved plans"
-            className="glass-field focus-ring inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[var(--text-secondary)] hover:text-[var(--text-primary)] cursor-pointer"
+            className="glass-field focus-ring inline-flex min-h-[44px] h-11 w-11 shrink-0 items-center justify-center rounded-full text-[var(--text-secondary)] hover:text-[var(--text-primary)] cursor-pointer"
           >
             <CloseIcon className="h-4 w-4" />
           </button>
