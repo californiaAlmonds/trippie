@@ -12,6 +12,12 @@ import {
 } from "react";
 import type { TripMode } from "@/lib/search";
 import type { Cabin } from "@/lib/types";
+import {
+  type CommitOutcome,
+  createPlanPatchController,
+  type PlanPatch,
+  type PlanPatchController,
+} from "../plans/commitQueue";
 import type { Query } from "../recentStore";
 import {
   type AccountUser,
@@ -69,11 +75,18 @@ export interface AccountContextValue {
   closePlans: () => void;
   plans: Plan[];
   plansLoading: boolean;
+  planSaving: Record<string, boolean>;
+  isPlanSaving: (id: string | number) => boolean;
   refreshPlans: () => Promise<void>;
   createPlan: (input: CreatePlanInput) => Promise<ApiResult<{ plan: Plan }>>;
+  patchPlan: (
+    id: string | number,
+    patch: PlanPatch,
+  ) => Promise<CommitOutcome<Plan, { plan: Plan }, PlanPatch>>;
+  setPlanLocalValue: (id: string | number, patch: PlanPatch) => void;
   updatePlan: (
     id: string | number,
-    patch: { alertEnabled?: boolean; targetPrice?: number | null },
+    patch: PlanPatch,
     options?: UpdatePlanOptions,
   ) => Promise<ApiResult<{ plan: Plan }>>;
   deletePlan: (id: string | number) => Promise<ApiResult<null>>;
@@ -113,6 +126,7 @@ export function AccountProvider({
   const [plansOpen, setPlansOpen] = useState(false);
   const [plans, setPlans] = useState<Plan[]>([]);
   const [plansLoading, setPlansLoading] = useState(false);
+  const [planSaving, setPlanSaving] = useState<Record<string, boolean>>({});
 
   const [isNative, setIsNative] = useState(false);
   const [pushStatus, setPushStatus] = useState<PushPermissionStatus>("off");
@@ -128,6 +142,55 @@ export function AccountProvider({
     }
     setPushPromptOpen(true);
   }, [isNative, pushStatus]);
+
+  const promptOnceForPushRef = useRef(promptOnceForPush);
+  useEffect(() => {
+    promptOnceForPushRef.current = promptOnceForPush;
+  }, [promptOnceForPush]);
+
+  const planControllerRef = useRef<PlanPatchController<
+    Plan,
+    { plan: Plan }
+  > | null>(null);
+
+  const getPlanController = useCallback(() => {
+    if (!planControllerRef.current) {
+      planControllerRef.current = createPlanPatchController<
+        Plan,
+        { plan: Plan }
+      >({
+        send: async (planId, patch) => {
+          const res = await api<{ plan: Plan }>(
+            `/api/plans/${encodeURIComponent(planId)}`,
+            {
+              method: "PATCH",
+              body: patch,
+            },
+          );
+          if (res.ok && res.data?.plan) {
+            if (patch.alertEnabled === true && res.data.plan.alertEnabled) {
+              promptOnceForPushRef.current();
+            }
+            return res;
+          }
+          if (isEndpointUnavailable(res)) {
+            if (patch.alertEnabled === true) {
+              promptOnceForPushRef.current();
+            }
+            return { ok: true, status: 200, data: null };
+          }
+          return res;
+        },
+        onPlansChange: (nextPlans) => {
+          setPlans(nextPlans);
+        },
+        onSavingChange: (nextSaving) => {
+          setPlanSaving(nextSaving);
+        },
+      });
+    }
+    return planControllerRef.current;
+  }, []);
 
   const requestPushPermission = useCallback(async () => {
     if (!isNative) return;
@@ -164,14 +227,14 @@ export function AccountProvider({
     try {
       const res = await api<{ plans: Plan[] }>("/api/plans");
       if (res.ok && Array.isArray(res.data?.plans)) {
-        setPlans(res.data.plans);
+        getPlanController().syncPlans(res.data.plans);
       } else if (isEndpointUnavailable(res)) {
         // Parallel backend route not mounted yet; keep existing session fallback
       }
     } finally {
       setPlansLoading(false);
     }
-  }, []);
+  }, [getPlanController]);
 
   useEffect(() => {
     let cancelled = false;
@@ -183,7 +246,7 @@ export function AccountProvider({
         void api<{ plans: Plan[] }>("/api/plans").then((plansRes) => {
           if (cancelled) return;
           if (plansRes.ok && Array.isArray(plansRes.data?.plans)) {
-            setPlans(plansRes.data.plans);
+            getPlanController().syncPlans(plansRes.data.plans);
           }
         });
       } else {
@@ -194,7 +257,7 @@ export function AccountProvider({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [getPlanController]);
 
   const runPendingAuthSuccess = useCallback(async (authedUser: AccountUser) => {
     const cb = pendingSuccessRef.current;
@@ -267,12 +330,12 @@ export function AccountProvider({
       } catch {
         // Ignore storage errors
       }
+      getPlanController().clear();
       setUser(null);
       setStatus("guest");
-      setPlans([]);
       setPlansOpen(false);
     }
-  }, []);
+  }, [getPlanController]);
 
   const deleteAccount = useCallback(
     async (password: string): Promise<ApiResult<null>> => {
@@ -286,14 +349,14 @@ export function AccountProvider({
         } catch {
           // Ignore storage errors
         }
+        getPlanController().clear();
         setUser(null);
         setStatus("guest");
-        setPlans([]);
         setPlansOpen(false);
       }
       return res;
     },
-    [],
+    [getPlanController],
   );
 
   const openAuthDialog = useCallback((options?: OpenAuthDialogOptions) => {
@@ -345,10 +408,7 @@ export function AccountProvider({
           ...res.data.plan,
           cabin: res.data.plan.cabin ?? cabin,
         };
-        setPlans((prev) => [
-          created,
-          ...prev.filter((p) => String(p.id) !== String(created.id)),
-        ]);
+        getPlanController().upsertPlan(created);
         if (created.alertEnabled) {
           promptOnceForPush();
         }
@@ -373,7 +433,8 @@ export function AccountProvider({
           expired: input.month < currentMonth,
           createdAt: new Date().toISOString(),
         };
-        setPlans((prev) => [fallbackPlan, ...prev].slice(0, 20));
+        const controller = getPlanController();
+        controller.syncPlans([fallbackPlan, ...controller.getPlans()].slice(0, 20));
         if (fallbackPlan.alertEnabled) {
           promptOnceForPush();
         }
@@ -382,99 +443,69 @@ export function AccountProvider({
 
       return res;
     },
-    [user?.verified, promptOnceForPush],
+    [user?.verified, promptOnceForPush, getPlanController],
   );
 
-  const planUpdateSeqRef = useRef<Map<string, number>>(new Map());
+  const patchPlan = useCallback(
+    (
+      id: string | number,
+      patch: PlanPatch,
+    ): Promise<CommitOutcome<Plan, { plan: Plan }, PlanPatch>> => {
+      return getPlanController().patchPlan(id, patch);
+    },
+    [getPlanController],
+  );
+
+  const setPlanLocalValue = useCallback(
+    (id: string | number, patch: PlanPatch): void => {
+      getPlanController().setLocalValue(id, patch);
+    },
+    [getPlanController],
+  );
+
+  const isPlanSaving = useCallback(
+    (id: string | number): boolean => {
+      return Boolean(planSaving[String(id)]);
+    },
+    [planSaving],
+  );
 
   const updatePlan = useCallback(
     async (
       id: string | number,
-      patch: { alertEnabled?: boolean; targetPrice?: number | null },
-      options?: UpdatePlanOptions,
+      patch: PlanPatch,
     ): Promise<ApiResult<{ plan: Plan }>> => {
-      const key = String(id);
-      const seq = (planUpdateSeqRef.current.get(key) ?? 0) + 1;
-      planUpdateSeqRef.current.set(key, seq);
-
-      const isStillCurrent = () =>
-        planUpdateSeqRef.current.get(key) === seq &&
-        (options?.isCurrent ? options.isCurrent() : true);
-
-      const useOptimistic = options?.optimistic !== false;
-      let previousPlan: Plan | null = null;
-      let optimisticPlan: Plan | null = null;
-
-      setPlans((prev) =>
-        prev.map((p) => {
-          if (String(p.id) !== key) return p;
-          previousPlan = p;
-          const next: Plan = {
-            ...p,
-            ...(patch.alertEnabled !== undefined
-              ? { alertEnabled: patch.alertEnabled }
-              : {}),
-            ...(patch.targetPrice !== undefined
-              ? { targetPrice: patch.targetPrice }
-              : {}),
-          };
-          optimisticPlan = next;
-          return useOptimistic ? next : p;
-        }),
-      );
-
-      const res = await api<{ plan: Plan }>(
-        `/api/plans/${encodeURIComponent(key)}`,
-        {
-          method: "PATCH",
-          body: patch,
-        },
-      );
-
-      if (!isStillCurrent()) {
-        return res;
+      const outcome = await getPlanController().patchPlan(id, patch);
+      if (outcome.rolledBack) {
+        return {
+          ok: false,
+          status: outcome.result?.status ?? 500,
+          data: null,
+          error: outcome.error ?? "Could not update plan.",
+        };
       }
-
-      if (res.ok && res.data?.plan) {
-        const updated = res.data.plan;
-        setPlans((prev) =>
-          prev.map((p) => (String(p.id) === key ? updated : p)),
-        );
-        if (patch.alertEnabled === true && updated.alertEnabled) {
-          promptOnceForPush();
-        }
-        return res;
+      if (outcome.result && !outcome.result.ok) {
+        return {
+          ok: false,
+          status: outcome.result.status ?? 500,
+          data: null,
+          error: outcome.result.error ?? "Could not update plan.",
+        };
       }
-
-      if (isEndpointUnavailable(res) && optimisticPlan) {
-        const applied = optimisticPlan;
-        setPlans((prev) =>
-          prev.map((p) => (String(p.id) === key ? applied : p)),
-        );
-        if (patch.alertEnabled === true) {
-          promptOnceForPush();
-        }
-        return { ok: true, status: 200, data: { plan: applied } };
-      }
-
-      if (useOptimistic && previousPlan) {
-        const rollback = previousPlan;
-        setPlans((prev) =>
-          prev.map((p) => (String(p.id) === key ? rollback : p)),
-        );
-      }
-      return res;
+      return {
+        ok: true,
+        status: outcome.result?.status ?? 200,
+        data: { plan: outcome.currentValue },
+      };
     },
-    [promptOnceForPush],
+    [getPlanController],
   );
 
   const deletePlan = useCallback(
     async (id: string | number): Promise<ApiResult<null>> => {
-      let snapshot: Plan[] = [];
-      setPlans((prev) => {
-        snapshot = prev;
-        return prev.filter((p) => String(p.id) !== String(id));
-      });
+      const controller = getPlanController();
+      const snapshot = controller.getPlans();
+      controller.removePlan(id);
 
       const res = await api<null>(
         `/api/plans/${encodeURIComponent(String(id))}`,
@@ -487,10 +518,10 @@ export function AccountProvider({
         return { ok: true, status: 204, data: null };
       }
 
-      setPlans(snapshot);
+      controller.syncPlans(snapshot);
       return res;
     },
-    [],
+    [getPlanController],
   );
 
   const searchAgain = useCallback(
@@ -521,8 +552,12 @@ export function AccountProvider({
       closePlans,
       plans: visiblePlans,
       plansLoading,
+      planSaving,
+      isPlanSaving,
       refreshPlans,
       createPlan,
+      patchPlan,
+      setPlanLocalValue,
       updatePlan,
       deletePlan,
       searchAgain,
@@ -551,8 +586,12 @@ export function AccountProvider({
       closePlans,
       visiblePlans,
       plansLoading,
+      planSaving,
+      isPlanSaving,
       refreshPlans,
       createPlan,
+      patchPlan,
+      setPlanLocalValue,
       updatePlan,
       deletePlan,
       searchAgain,
@@ -585,8 +624,22 @@ const FALLBACK_ACCOUNT_CONTEXT: AccountContextValue = {
   closePlans: () => undefined,
   plans: [],
   plansLoading: false,
+  planSaving: {},
+  isPlanSaving: () => false,
   refreshPlans: async () => undefined,
   createPlan: async () => ({ ok: false, status: 0, data: null, error: "Unavailable" }),
+  patchPlan: async (_id, patch) => ({
+    seq: 0,
+    value: {} as Plan,
+    patch,
+    superseded: false,
+    applied: false,
+    rolledBack: false,
+    currentValue: {} as Plan,
+    confirmedValue: {} as Plan,
+    error: "Unavailable",
+  }),
+  setPlanLocalValue: () => undefined,
   updatePlan: async () => ({ ok: false, status: 0, data: null, error: "Unavailable" }),
   deletePlan: async () => ({ ok: false, status: 0, data: null, error: "Unavailable" }),
   searchAgain: () => undefined,
@@ -603,3 +656,4 @@ export function useAccount(): AccountContextValue {
   const ctx = useContext(AccountContext);
   return ctx ?? FALLBACK_ACCOUNT_CONTEXT;
 }
+
