@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Trippie</string>
+    <string name="title_activity_main">Trippie</string>
+    <string name="package_name">com.californiaalmonds.trippie</string>
+    <string name="custom_url_scheme">com.californiaalmonds.trippie</string>
+</resources>

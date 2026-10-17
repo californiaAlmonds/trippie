@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "994194978317",
+    "project_id": "trippie-c3768",
+    "storage_bucket": "trippie-c3768.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:994194978317:android:753bb85935e8f9630f4744",
+        "android_client_info": {
+          "package_name": "com.californiaalmonds.trippie"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDdFGT5upeiAg-_0AOFrs8KVZXQOOx5V3I"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
