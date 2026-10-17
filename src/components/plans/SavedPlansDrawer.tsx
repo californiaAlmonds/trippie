@@ -16,15 +16,31 @@ function PlanCard({ plan }: { plan: Plan }) {
   const { user, updatePlan, deletePlan, searchAgain } = useAccount();
   const { format } = useCurrency();
 
+  const defaultTarget = computeDefaultTargetInr(
+    null,
+    plan.lastSeenPrice ?? plan.lastAlertPrice ?? 12_000,
+  );
+
+  const [prevServerTarget, setPrevServerTarget] = useState<number | null>(
+    plan.targetPrice,
+  );
   const [limitOpen, setLimitOpen] = useState(plan.targetPrice !== null);
   const [targetInr, setTargetInr] = useState<number>(
-    plan.targetPrice !== null
-      ? plan.targetPrice
-      : computeDefaultTargetInr(null, plan.lastSeenPrice ?? plan.lastAlertPrice ?? 12_000),
+    plan.targetPrice !== null ? plan.targetPrice : defaultTarget,
   );
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [itemError, setItemError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [savingLimit, setSavingLimit] = useState(false);
+  const commitSeqRef = useRef(0);
+
+  if (plan.targetPrice !== prevServerTarget) {
+    setPrevServerTarget(plan.targetPrice);
+    setLimitOpen(plan.targetPrice !== null);
+    if (plan.targetPrice !== null) {
+      setTargetInr(plan.targetPrice);
+    }
+  }
 
   const stayLabel =
     plan.trip === "oneway"
@@ -54,15 +70,13 @@ function PlanCard({ plan }: { plan: Plan }) {
   async function handleToggleLimit() {
     if (plan.expired || busy) return;
     setItemError("");
+    commitSeqRef.current++;
+    const prevTarget = targetInr;
     const nextEnabled = !limitOpen;
     setLimitOpen(nextEnabled);
 
     const nextTarget = nextEnabled
-      ? clampAndRoundInr(
-          plan.targetPrice ??
-            targetInr ??
-            computeDefaultTargetInr(null, plan.lastSeenPrice ?? 12_000),
-        )
+      ? clampAndRoundInr(plan.targetPrice ?? targetInr ?? defaultTarget)
       : null;
 
     if (nextTarget !== null) {
@@ -75,24 +89,48 @@ function PlanCard({ plan }: { plan: Plan }) {
       if (!res.ok) {
         setItemError(res.error ?? "Could not update target price.");
         setLimitOpen(plan.targetPrice !== null);
+        setTargetInr(plan.targetPrice ?? prevTarget);
       }
+    } catch {
+      setItemError("Could not update target price.");
+      setLimitOpen(plan.targetPrice !== null);
+      setTargetInr(plan.targetPrice ?? prevTarget);
     } finally {
       setBusy(false);
     }
   }
 
-  async function handleSaveSliderLimit(nextInr: number) {
+  async function handleCommitSliderLimit(nextInr: number) {
+    if (plan.expired) return;
     const clamped = clampAndRoundInr(nextInr);
     setTargetInr(clamped);
+    if (clamped === plan.targetPrice) {
+      return;
+    }
+
+    const seq = ++commitSeqRef.current;
+    const rollbackTarget = plan.targetPrice ?? defaultTarget;
+    const rollbackOpen = plan.targetPrice !== null;
+
     setItemError("");
-    setBusy(true);
+    setSavingLimit(true);
     try {
       const res = await updatePlan(plan.id, { targetPrice: clamped });
+      if (commitSeqRef.current !== seq) return;
       if (!res.ok) {
         setItemError(res.error ?? "Could not update target price.");
+        setTargetInr(rollbackTarget);
+        setLimitOpen(rollbackOpen);
       }
+    } catch {
+      if (commitSeqRef.current !== seq) return;
+      setItemError("Could not update target price.");
+      setTargetInr(rollbackTarget);
+      setLimitOpen(rollbackOpen);
     } finally {
-      setBusy(false);
+      if (commitSeqRef.current === seq) {
+        setSavingLimit(false);
+      }
     }
   }
 
@@ -110,7 +148,7 @@ function PlanCard({ plan }: { plan: Plan }) {
     }
   }
 
-  const displayedTarget = plan.targetPrice ?? (limitOpen ? targetInr : null);
+  const displayedTarget = limitOpen ? targetInr : null;
 
   return (
     <li className="glass-subtle rounded-2xl p-4 grid gap-3">
@@ -258,9 +296,12 @@ function PlanCard({ plan }: { plan: Plan }) {
               currentBest={plan.lastSeenPrice ?? plan.lastAlertPrice ?? null}
               targetPriceInr={targetInr}
               onChangeInr={(val) => {
-                void handleSaveSliderLimit(val);
+                setTargetInr(clampAndRoundInr(val));
               }}
-              disabled={busy}
+              onCommitInr={(val) => {
+                void handleCommitSliderLimit(val);
+              }}
+              saving={savingLimit}
               label={`Alert limit for ${plan.origin} to ${plan.destination}`}
             />
           )}

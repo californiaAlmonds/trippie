@@ -113,6 +113,17 @@ export default function AirportPicker({
     if (!open) return;
 
     const q = isEditing ? queryText.trim() : "";
+    if (!q) {
+      const timer = window.setTimeout(() => {
+        setOptions(FALLBACK_AIRPORTS);
+        setActiveIndex(0);
+        setSearching(false);
+      }, 0);
+      return () => {
+        window.clearTimeout(timer);
+      };
+    }
+
     const cacheKey = q.toLowerCase();
     const hit = queryCache.get(cacheKey);
 
@@ -149,6 +160,7 @@ export default function AirportPicker({
           }
           if (Array.isArray(data?.airports) && data.airports.length === 0) {
             const localMatches = filterFallbackAirports(q);
+            queryCache.set(cacheKey, localMatches);
             setOptions(localMatches);
             setActiveIndex(0);
             setSearching(false);

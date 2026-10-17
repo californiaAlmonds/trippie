@@ -110,6 +110,9 @@ function PlannerContent({
   const [trackStatus, setTrackStatus] = useState<TrackRouteStatus>("idle");
   const [trackEtaMin, setTrackEtaMin] = useState<number | null>(null);
   const searchIdRef = useRef(0);
+  const pollStartedRef = useRef<{ queryKey: string; startedAt: number } | null>(
+    null,
+  );
 
   const recentRaw = useSyncExternalStore(
     subscribeRecent,
@@ -149,6 +152,7 @@ function PlannerContent({
         cabin: rawQuery.cabin === "business" ? "business" : "economy",
       };
       const mySearchId = ++searchIdRef.current;
+      pollStartedRef.current = null;
 
       setLoading(true);
       setError("");
@@ -232,14 +236,28 @@ function PlannerContent({
 
   // Poll /api/search every 30s for up to 12 min while collecting live prices
   const activeQuery = result?.query ?? null;
+  const activeQueryKey = useMemo(
+    () => (activeQuery ? buildSearchQueryString(activeQuery).toString() : null),
+    [activeQuery],
+  );
   const initialCheckedAt = result?.freshness?.lastCheckedAt ?? null;
 
   useEffect(() => {
-    if (trackStatus !== "collecting" || !activeQuery) return;
+    if (trackStatus !== "collecting" || !activeQuery || !activeQueryKey) return;
+
+    if (
+      !pollStartedRef.current ||
+      pollStartedRef.current.queryKey !== activeQueryKey
+    ) {
+      pollStartedRef.current = {
+        queryKey: activeQueryKey,
+        startedAt: Date.now(),
+      };
+    }
 
     let cancelled = false;
-    const startedAt = Date.now();
-    const qs = buildSearchQueryString(activeQuery);
+    const startedAt = pollStartedRef.current.startedAt;
+    const qs = activeQueryKey;
 
     const intervalId = window.setInterval(async () => {
       if (cancelled) return;
@@ -288,7 +306,7 @@ function PlannerContent({
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [trackStatus, activeQuery, initialCheckedAt]);
+  }, [trackStatus, activeQuery, activeQueryKey, initialCheckedAt]);
 
   const reuse = useCallback(
     (q: Query) => {

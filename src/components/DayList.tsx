@@ -35,7 +35,6 @@ export default function DayList({
   selectedDay,
   onSelect,
   headerAction,
-  lastCheckedAt,
 }: DayListProps) {
   const { format } = useCurrency();
   const topDays = days.slice(0, 15);
@@ -63,7 +62,9 @@ export default function DayList({
           const times = formatFlightTimes(d);
           const duration = formatDuration(d.durationMin);
           const stops = formatStops(d.stops);
-          const checkedLabel = formatRelativeChecked(d.checkedAt ?? lastCheckedAt);
+          const checkedLabel = d.checkedAt
+            ? formatRelativeChecked(d.checkedAt)
+            : "Estimate (cached fare, time unknown)";
 
           const flightMeta = [d.airline, times, duration, stops]
             .filter(Boolean)

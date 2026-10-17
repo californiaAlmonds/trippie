@@ -5,6 +5,9 @@ import type { TripMode } from "@/lib/search";
 import { addDays, monthBounds } from "@/lib/windows";
 import { useCurrency } from "./currency/CurrencyProvider";
 import { fmtDate } from "./format";
+import { formatCellPrice } from "./plans/sliderMath";
+
+export { formatCellPrice };
 
 interface CalendarEntry {
   date: string;
@@ -24,18 +27,10 @@ function monthDays(month: string): string[] {
   return days;
 }
 
-function formatCellPrice(converted: number, currency: string, format: (inr: number) => string, inrAmount: number): string {
-  if (currency === "INR" || converted >= 1000) {
-    const k = Math.round(converted / 100) / 10;
-    return `${currency === "INR" ? "" : "≈"}${k}k`;
-  }
-  return format(inrAmount);
-}
-
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
 
 export default function PriceCalendar({ trip, calendar }: PriceCalendarProps) {
-  const { currency, format, convert } = useCurrency();
+  const { currency, format, convert, symbol } = useCurrency();
   const calendarByDate = useMemo(
     () => new Map(calendar.map((c) => [c.date, c])),
     [calendar],
@@ -122,7 +117,7 @@ export default function PriceCalendar({ trip, calendar }: PriceCalendarProps) {
                 {c.date.slice(8)}
               </div>
               <div className="mt-0.5 text-[11px] font-medium tabular-nums opacity-90 leading-tight">
-                {formatCellPrice(converted, currency, format, c.total)}
+                {formatCellPrice(converted, currency, format, c.total, symbol)}
               </div>
             </div>
           );

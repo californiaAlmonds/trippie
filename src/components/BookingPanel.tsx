@@ -31,7 +31,6 @@ export default function BookingPanel({
   origin,
   destination,
   cabin = "economy",
-  lastCheckedAt,
 }: BookingPanelProps) {
   const { currency, format } = useCurrency();
   const preferredSource =
@@ -99,9 +98,9 @@ export default function BookingPanel({
           const times = formatFlightTimes(leg);
           const duration = formatDuration(leg.durationMin);
           const stops = formatStops(leg.stops);
-          const checkedLabel = formatRelativeChecked(
-            leg.checkedAt ?? lastCheckedAt,
-          );
+          const checkedLabel = leg.checkedAt
+            ? formatRelativeChecked(leg.checkedAt)
+            : "Estimate (cached fare, time unknown)";
           const detailParts = [
             times,
             duration,

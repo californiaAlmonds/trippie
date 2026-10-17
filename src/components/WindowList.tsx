@@ -46,7 +46,6 @@ export default function WindowList({
   selected,
   onSelect,
   headerAction,
-  lastCheckedAt,
 }: WindowListProps) {
   const { format } = useCurrency();
   const topWindows = windows.slice(0, 15);
@@ -73,10 +72,21 @@ export default function WindowList({
           const delta = formatDeltaFromBest(w.total, bestTotal);
           const outBrief = formatLegBrief(w.depart);
           const retBrief = formatLegBrief(w.ret);
-          const hasEstimate = Boolean(w.depart.estimate || w.ret.estimate);
-          const checkedLabel = formatRelativeChecked(
-            w.depart.checkedAt ?? w.ret.checkedAt ?? lastCheckedAt,
+          const hasEstimate = Boolean(
+            w.depart.estimate ||
+              w.ret.estimate ||
+              !w.depart.checkedAt ||
+              !w.ret.checkedAt,
           );
+          const legCheckedAt =
+            w.depart.checkedAt && w.ret.checkedAt
+              ? w.depart.checkedAt <= w.ret.checkedAt
+                ? w.depart.checkedAt
+                : w.ret.checkedAt
+              : null;
+          const checkedLabel = legCheckedAt
+            ? formatRelativeChecked(legCheckedAt)
+            : "Estimate (cached fare, time unknown)";
 
           return (
             <li key={`${w.depart.date}-${w.ret.date}`}>

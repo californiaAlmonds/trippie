@@ -1,98 +1,141 @@
 "use client";
 
-import { useId, useMemo } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useCurrency } from "../currency/CurrencyProvider";
+import { SpinnerIcon } from "../icons";
 import type { PriceStats } from "../PriceInsightsCard";
+import {
+  clampAndRoundInr,
+  computeCurrencyStep,
+  computeDefaultTargetInr,
+  computeInrRange,
+  computeSliderBounds,
+  inrToSliderValue,
+  pctInRange,
+  sliderValueToInr,
+} from "./sliderMath";
+
+export { clampAndRoundInr, computeCurrencyStep, computeDefaultTargetInr };
 
 interface PriceLimitSliderProps {
   stats?: PriceStats | null;
   currentBest?: number | null;
   targetPriceInr: number;
   onChangeInr: (nextInr: number) => void;
+  onCommitInr?: (nextInr: number) => void;
   disabled?: boolean;
+  saving?: boolean;
   label?: string;
 }
 
-const MIN_INR = 500;
-const MAX_INR = 1_000_000;
-
-export function clampAndRoundInr(rawInr: number): number {
-  if (!Number.isFinite(rawInr)) return MIN_INR;
-  const rounded = Math.round(rawInr / 50) * 50;
-  return Math.min(MAX_INR, Math.max(MIN_INR, rounded));
-}
-
-export function computeCurrencyStep(minCur: number, maxCur: number, currency: string): number {
-  if (currency === "INR") return 50;
-  const span = Math.max(1, maxCur - minCur);
-  if (span <= 150) return 1;
-  if (span <= 600) return 5;
-  if (span <= 2500) return 10;
-  if (span <= 10000) return 50;
-  if (span <= 50000) return 100;
-  return 500;
-}
-
-export function computeDefaultTargetInr(
-  stats?: PriceStats | null,
-  currentBest?: number | null,
-): number {
-  if (stats && stats.samples > 0 && stats.p25 > 0) {
-    return clampAndRoundInr(stats.p25);
-  }
-  if (typeof currentBest === "number" && currentBest > 0) {
-    return clampAndRoundInr(currentBest * 0.95);
-  }
-  return 10_000;
-}
-
-function pctInRange(val: number, lo: number, hi: number): number {
-  if (hi <= lo) return 50;
-  return Math.min(100, Math.max(0, ((val - lo) / (hi - lo)) * 100));
-}
+const COMMIT_DEBOUNCE_MS = 600;
 
 export default function PriceLimitSlider({
   stats,
   currentBest,
   targetPriceInr,
   onChangeInr,
+  onCommitInr,
   disabled = false,
+  saving = false,
   label = "Alert price limit",
 }: PriceLimitSliderProps) {
   const { currency, convert, toInr, format } = useCurrency();
   const sliderId = useId();
 
-  const { minInr, maxInr } = useMemo(() => {
-    if (stats && stats.samples > 0 && stats.min > 0 && stats.max >= stats.min) {
-      const lo = clampAndRoundInr(stats.min * 0.8);
-      const hi = Math.max(lo + 500, clampAndRoundInr(stats.max * 1.1));
-      return { minInr: lo, maxInr: hi };
-    }
-    const base =
-      typeof currentBest === "number" && currentBest > 0
-        ? currentBest
-        : targetPriceInr > 0
-          ? targetPriceInr
-          : 12_000;
-    const lo = clampAndRoundInr(base * 0.5);
-    const hi = Math.max(lo + 500, clampAndRoundInr(base * 1.5));
-    return { minInr: lo, maxInr: hi };
-  }, [stats, currentBest, targetPriceInr]);
+  const [sliderState, setSliderState] = useState<{
+    currency: string;
+    lastEmittedInr: number;
+    anchorInr: number;
+    curVal: number | null;
+  }>(() => ({
+    currency,
+    lastEmittedInr: targetPriceInr,
+    anchorInr: targetPriceInr > 0 ? targetPriceInr : 12_000,
+    curVal: null,
+  }));
 
-  const effectiveMinInr = Math.min(minInr, targetPriceInr);
-  const effectiveMaxInr = Math.max(maxInr, targetPriceInr);
+  const isSynced =
+    sliderState.currency === currency &&
+    sliderState.lastEmittedInr === targetPriceInr &&
+    sliderState.curVal !== null;
 
-  const minCurRaw = convert(effectiveMinInr);
-  const maxCurRaw = convert(effectiveMaxInr);
-  const step = computeCurrencyStep(minCurRaw, maxCurRaw, currency);
+  const anchorInr = isSynced
+    ? sliderState.anchorInr
+    : targetPriceInr > 0
+      ? targetPriceInr
+      : 12_000;
 
-  const minCur = Math.max(1, Math.floor(minCurRaw / step) * step);
-  const maxCur = Math.max(minCur + step, Math.ceil(maxCurRaw / step) * step);
-
-  const currentCurVal = Math.min(
-    maxCur,
-    Math.max(minCur, Math.round(convert(targetPriceInr) / step) * step),
+  const { minInr, maxInr } = useMemo(
+    () => computeInrRange(stats, currentBest, anchorInr),
+    [stats, currentBest, anchorInr],
   );
+
+  const bounds = useMemo(
+    () =>
+      computeSliderBounds({
+        minInr,
+        maxInr,
+        anchorInr,
+        currency,
+        convert,
+        toInr,
+      }),
+    [minInr, maxInr, anchorInr, currency, convert, toInr],
+  );
+
+  const { effectiveMinInr, effectiveMaxInr, minCur, maxCur, step } = bounds;
+
+  const currentCurVal = isSynced
+    ? Math.min(maxCur, Math.max(minCur, sliderState.curVal!))
+    : inrToSliderValue(targetPriceInr, bounds, convert);
+
+  const onCommitRef = useRef(onCommitInr);
+  useEffect(() => {
+    onCommitRef.current = onCommitInr;
+  }, [onCommitInr]);
+
+  const dirtyInrRef = useRef<number | null>(null);
+  const pointerDownRef = useRef(false);
+  const debounceTimerRef = useRef<number | null>(null);
+
+  const flushCommit = useCallback(() => {
+    if (debounceTimerRef.current !== null) {
+      window.clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+    }
+    if (dirtyInrRef.current !== null) {
+      const val = dirtyInrRef.current;
+      dirtyInrRef.current = null;
+      onCommitRef.current?.(val);
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (debounceTimerRef.current !== null) {
+        window.clearTimeout(debounceTimerRef.current);
+      }
+    };
+  }, []);
+
+  const handlePointerDown = useCallback(() => {
+    pointerDownRef.current = true;
+    if (debounceTimerRef.current !== null) {
+      window.clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+    }
+    const handleWindowPointerEnd = () => {
+      pointerDownRef.current = false;
+      window.removeEventListener("pointerup", handleWindowPointerEnd);
+      window.removeEventListener("pointercancel", handleWindowPointerEnd);
+      flushCommit();
+    };
+    window.addEventListener("pointerup", handleWindowPointerEnd, { once: true });
+    window.addEventListener("pointercancel", handleWindowPointerEnd, {
+      once: true,
+    });
+  }, [flushCommit]);
 
   const formattedValueText = format(targetPriceInr);
 
@@ -114,9 +157,21 @@ export default function PriceLimitSlider({
         >
           {label}
         </label>
-        <strong className="text-xs sm:text-sm font-semibold tabular-nums text-[var(--accent)]">
-          {formattedValueText}
-        </strong>
+        <span className="inline-flex items-center gap-2">
+          {saving && (
+            <span
+              role="status"
+              aria-live="polite"
+              className="inline-flex items-center gap-1 text-[11px] font-medium text-[var(--text-muted)]"
+            >
+              <SpinnerIcon className="h-3 w-3 animate-spin text-[var(--accent)]" />
+              <span>Saving…</span>
+            </span>
+          )}
+          <strong className="text-xs sm:text-sm font-semibold tabular-nums text-[var(--accent)]">
+            {formattedValueText}
+          </strong>
+        </span>
       </div>
 
       <div className="relative flex items-center py-2">
@@ -130,10 +185,42 @@ export default function PriceLimitSlider({
           disabled={disabled}
           aria-label={label}
           aria-valuetext={formattedValueText}
+          onPointerDown={handlePointerDown}
+          onPointerUp={() => {
+            pointerDownRef.current = false;
+            flushCommit();
+          }}
+          onPointerCancel={() => {
+            pointerDownRef.current = false;
+            flushCommit();
+          }}
+          onBlur={() => {
+            pointerDownRef.current = false;
+            flushCommit();
+          }}
           onChange={(e) => {
             const curVal = Number(e.target.value);
-            const nextInr = clampAndRoundInr(toInr(curVal));
+            const nextInr = sliderValueToInr(curVal, toInr);
+            setSliderState({
+              currency,
+              lastEmittedInr: nextInr,
+              anchorInr,
+              curVal,
+            });
             onChangeInr(nextInr);
+            if (onCommitRef.current) {
+              dirtyInrRef.current = nextInr;
+              if (debounceTimerRef.current !== null) {
+                window.clearTimeout(debounceTimerRef.current);
+                debounceTimerRef.current = null;
+              }
+              if (!pointerDownRef.current) {
+                debounceTimerRef.current = window.setTimeout(
+                  flushCommit,
+                  COMMIT_DEBOUNCE_MS,
+                );
+              }
+            }
           }}
           className="focus-ring min-h-[44px] w-full accent-[var(--accent)] cursor-pointer disabled:opacity-50"
         />

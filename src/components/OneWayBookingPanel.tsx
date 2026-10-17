@@ -31,7 +31,6 @@ export default function OneWayBookingPanel({
   origin,
   destination,
   cabin = "economy",
-  lastCheckedAt,
 }: OneWayBookingPanelProps) {
   const { currency, format } = useCurrency();
   const [best, ...others] = orderedSites(day.source);
@@ -44,7 +43,9 @@ export default function OneWayBookingPanel({
   const times = formatFlightTimes(day);
   const duration = formatDuration(day.durationMin);
   const stops = formatStops(day.stops);
-  const checkedLabel = formatRelativeChecked(day.checkedAt ?? lastCheckedAt);
+  const checkedLabel = day.checkedAt
+    ? formatRelativeChecked(day.checkedAt)
+    : "Estimate (cached fare, time unknown)";
   const detailParts = [
     times,
     duration,
