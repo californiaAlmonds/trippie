@@ -178,6 +178,12 @@ export const MIGRATIONS: readonly Migration[] = [
       `ALTER TABLE recent_searches ADD COLUMN cabin TEXT NOT NULL DEFAULT 'economy' CHECK (cabin IN ('economy','business'))`,
     ],
   },
+  {
+    id: 7,
+    statements: [
+      `ALTER TABLE plans ADD COLUMN last_seen_price INTEGER`,
+    ],
+  },
 ];
 
 const SQLITE_BUSY_RE = /SQLITE_BUSY|database is locked/i;

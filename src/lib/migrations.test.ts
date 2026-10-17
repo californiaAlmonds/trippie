@@ -450,8 +450,9 @@ test("migration 6 rebuilds fares with cabin + flight details, keeps existing row
       /CHECK constraint failed/i,
     );
 
-    const plan = await client.execute("SELECT cabin FROM plans WHERE id = 'p6'");
+    const plan = await client.execute("SELECT cabin, last_seen_price FROM plans WHERE id = 'p6'");
     assert.equal(plan.rows[0].cabin, "economy");
+    assert.equal(plan.rows[0].last_seen_price, null);
     const tables = await client.execute(
       "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('tracked_routes','user_prefs','fares_v2') ORDER BY name",
     );

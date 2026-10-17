@@ -12,11 +12,13 @@ import {
 } from "../push/fcm.ts";
 import type { TripMode } from "../search.ts";
 import { getClient, getFreshFares } from "../store.ts";
-import type { DayFare, TripWindow } from "../types.ts";
+import type { Cabin, DayFare, TripWindow } from "../types.ts";
 import { addDays, computeWindows, diffDays, monthBounds } from "../windows.ts";
 import { appSecretConfigured, signUnsubscribeToken } from "./unsubscribe.ts";
 
 export const MAX_ALERTS_PER_RUN = 200;
+
+export type PriceFormatter = (amountInr: number) => string;
 
 export interface AlertPlanRow {
   id: string;
@@ -28,8 +30,10 @@ export interface AlertPlanRow {
   trip: TripMode;
   minGap: number;
   maxGap: number;
+  cabin: Cabin;
   targetPrice: number | null;
   lastAlertPrice: number | null;
+  lastSeenPrice: number | null;
   revision: number;
 }
 
@@ -46,6 +50,7 @@ export interface AlertRunOptions {
   now?: Date;
   sendMail?: (input: SendMailInput) => Promise<void>;
   sendPush?: (token: string, payload: PushMessageInput) => Promise<SendPushResult>;
+  getFormatter?: (userId: string) => Promise<PriceFormatter>;
   appSecret?: string;
   appOrigin?: string;
   fcmServiceAccount?: string;
@@ -86,6 +91,10 @@ export function formatInr(amount: number): string {
   return Math.round(amount).toLocaleString("en-IN");
 }
 
+export function defaultPriceFormatter(amountInr: number): string {
+  return `₹${formatInr(amountInr)}`;
+}
+
 export function formatMonthYear(month: string): string {
   const [y, m] = month.split("-").map(Number);
   if (!y || !m) return month;
@@ -96,6 +105,17 @@ export function formatMonthYear(month: string): string {
   });
 }
 
+function buildHeadline(plan: AlertPlanRow, bestPrice: number, fmt: PriceFormatter): string {
+  const cabinTag = plan.cabin === "business" ? " (Business)" : "";
+  const route = `${plan.origin} → ${plan.destination}${cabinTag}`;
+  const priceStr = fmt(bestPrice);
+  if (plan.targetPrice !== null) {
+    return `Below your limit: ${route} from ${priceStr} (limit ${fmt(plan.targetPrice)})`;
+  }
+  const oldStr = plan.lastSeenPrice !== null ? fmt(plan.lastSeenPrice) : priceStr;
+  return `Price dropped: ${route} now from ${priceStr} (was ${oldStr})`;
+}
+
 /**
  * Builds the alert email (text + HTML + optional List-Unsubscribe header).
  * Escapes all dynamic values in the HTML body using `escapeHtml`.
@@ -103,21 +123,23 @@ export function formatMonthYear(month: string): string {
 export function buildAlertEmail(
   plan: AlertPlanRow,
   best: AlertBestOptions,
-  options?: { appOrigin?: string; appSecret?: string },
+  options?: { appOrigin?: string; appSecret?: string; formatPrice?: PriceFormatter },
 ): SendMailInput {
+  const fmt = options?.formatPrice ?? defaultPriceFormatter;
   const baseOrigin = emailBaseOrigin(options?.appOrigin ?? process.env.APP_ORIGIN);
   const token = signUnsubscribeToken(plan.id, options?.appSecret ?? process.env.APP_SECRET);
   const unsubscribeUrl = `${baseOrigin}/unsubscribe?token=${encodeURIComponent(token)}`;
 
   const monthLabel = formatMonthYear(plan.month);
-  const bestFormatted = formatInr(best.bestPrice);
-  const subject = `Trippie: ${plan.origin} → ${plan.destination} from ₹${bestFormatted} in ${monthLabel}`;
+  const bestFormatted = fmt(best.bestPrice);
+  const headline = buildHeadline(plan, best.bestPrice, fmt);
+  const subject = `Trippie: ${headline} in ${monthLabel}`;
 
   const sites = orderedSites("google");
 
   const textLines: string[] = [
-    `Price alert for ${plan.origin} → ${plan.destination} (${monthLabel})`,
-    `Best price found: ₹${bestFormatted}`,
+    `${headline} (${monthLabel})`,
+    `Best price found: ${bestFormatted}`,
     "",
   ];
 
@@ -129,7 +151,7 @@ export function buildAlertEmail(
       const airlines = [w.depart.airline, w.ret.airline].filter(Boolean).join(" / ");
       const airlineSuffix = airlines ? ` (${airlines})` : "";
       textLines.push(
-        `- ${w.depart.date} to ${w.ret.date} (${w.gap}d): ₹${formatInr(w.total)} (out ₹${formatInr(w.depart.price)}, back ₹${formatInr(w.ret.price)})${airlineSuffix}`,
+        `- ${w.depart.date} to ${w.ret.date} (${w.gap}d): ${fmt(w.total)} (out ${fmt(w.depart.price)}, back ${fmt(w.ret.price)})${airlineSuffix}`,
       );
       for (const site of sites) {
         textLines.push(`  ${site.label}: ${site.url(plan.origin, plan.destination, w.depart.date, w.ret.date)}`);
@@ -145,14 +167,14 @@ export function buildAlertEmail(
 
       const airlineHtml = airlines ? ` &mdash; <span>${escapeHtml(airlines)}</span>` : "";
       htmlItems.push(
-        `<li><strong>${escapeHtml(w.depart.date)} &rarr; ${escapeHtml(w.ret.date)}</strong> (${w.gap}d): <strong>&#8377;${escapeHtml(formatInr(w.total))}</strong> (&#8377;${escapeHtml(formatInr(w.depart.price))} + &#8377;${escapeHtml(formatInr(w.ret.price))})${airlineHtml}<br/>${linksHtml}</li>`,
+        `<li><strong>${escapeHtml(w.depart.date)} &rarr; ${escapeHtml(w.ret.date)}</strong> (${w.gap}d): <strong>${escapeHtml(fmt(w.total))}</strong> (${escapeHtml(fmt(w.depart.price))} + ${escapeHtml(fmt(w.ret.price))})${airlineHtml}<br/>${linksHtml}</li>`,
       );
     }
   } else {
     textLines.push("Top cheapest one-way dates:");
     for (const d of best.days.slice(0, 3)) {
       const airlineSuffix = d.airline ? ` (${d.airline})` : "";
-      textLines.push(`- ${d.date}: ₹${formatInr(d.price)}${airlineSuffix}`);
+      textLines.push(`- ${d.date}: ${fmt(d.price)}${airlineSuffix}`);
       for (const site of sites) {
         textLines.push(`  ${site.label}: ${site.url(plan.origin, plan.destination, d.date)}`);
       }
@@ -167,21 +189,20 @@ export function buildAlertEmail(
 
       const airlineHtml = d.airline ? ` &mdash; <span>${escapeHtml(d.airline)}</span>` : "";
       htmlItems.push(
-        `<li><strong>${escapeHtml(d.date)}</strong>: <strong>&#8377;${escapeHtml(formatInr(d.price))}</strong>${airlineHtml}<br/>${linksHtml}</li>`,
+        `<li><strong>${escapeHtml(d.date)}</strong>: <strong>${escapeHtml(fmt(d.price))}</strong>${airlineHtml}<br/>${linksHtml}</li>`,
       );
     }
   }
 
   textLines.push("", `Unsubscribe from this alert: ${unsubscribeUrl}`);
 
-  const safeOrigin = escapeHtml(plan.origin);
-  const safeDest = escapeHtml(plan.destination);
+  const safeHeadline = escapeHtml(headline);
   const safeMonth = escapeHtml(monthLabel);
   const safeBest = escapeHtml(bestFormatted);
   const safeUnsubUrl = escapeHtml(unsubscribeUrl);
 
   const html = [
-    `<p>Price alert for <strong>${safeOrigin} &rarr; ${safeDest}</strong> in ${safeMonth}: best fare from <strong>&#8377;${safeBest}</strong>.</p>`,
+    `<p>${safeHeadline} in ${safeMonth}: best fare from <strong>${safeBest}</strong>.</p>`,
     `<ul>${htmlItems.join("")}</ul>`,
     `<p><a href="${safeUnsubUrl}">Unsubscribe from alerts for this plan</a></p>`,
   ].join("");
@@ -206,19 +227,20 @@ export function buildAlertEmail(
 export function buildAlertPush(
   plan: AlertPlanRow,
   best: AlertBestOptions,
-  options?: { appOrigin?: string },
+  options?: { appOrigin?: string; formatPrice?: PriceFormatter },
 ): PushMessageInput {
+  const fmt = options?.formatPrice ?? defaultPriceFormatter;
   const monthLabel = formatMonthYear(plan.month);
-  const bestFormatted = formatInr(best.bestPrice);
-  const title = `${plan.origin} → ${plan.destination} from ₹${bestFormatted}`;
+  const title = buildHeadline(plan, best.bestPrice, fmt);
 
+  const cabinPrefix = plan.cabin === "business" ? "Business · " : "";
   let body: string;
   if (best.trip === "round") {
     const w = best.windows[0]!;
-    body = `${monthLabel} · best ${w.depart.date} – ${w.ret.date}`;
+    body = `${cabinPrefix}${monthLabel} · best ${w.depart.date} – ${w.ret.date} (${fmt(best.bestPrice)})`;
   } else {
     const d = best.days[0]!;
-    body = `${monthLabel} · best ${d.date}`;
+    body = `${cabinPrefix}${monthLabel} · best ${d.date} (${fmt(best.bestPrice)})`;
   }
 
   const rawOrigin = options?.appOrigin !== undefined ? options.appOrigin : process.env.APP_ORIGIN;
@@ -232,6 +254,9 @@ export function buildAlertPush(
     minGap: String(plan.minGap),
     maxGap: String(plan.maxGap),
   });
+  if (plan.cabin === "business") {
+    qs.set("cabin", "business");
+  }
 
   const url = `${trimmedOrigin}/?${qs.toString()}`;
 
@@ -264,6 +289,8 @@ export async function runAlerts(options?: AlertRunOptions): Promise<AlertRunSumm
     options?.sendPush ??
     ((token: string, payload: PushMessageInput) =>
       sendPush(token, payload, { serviceAccountJson: options?.fcmServiceAccount }));
+  const getFormatterFn =
+    options?.getFormatter ?? (async () => defaultPriceFormatter);
 
   const emailChannelAvailable =
     appSecretConfigured(appSecret) && (hasCustomMailSender || mailConfigured());
@@ -283,8 +310,8 @@ export async function runAlerts(options?: AlertRunOptions): Promise<AlertRunSumm
   const client = await getClient();
   const rs = await client.execute({
     sql: `SELECT p.id, p.user_id, p.origin, p.destination, p.month, p.trip,
-                 p.min_gap, p.max_gap, p.alert_enabled, p.target_price,
-                 p.last_alert_price, p.last_alert_at, p.revision, p.created_at,
+                 p.min_gap, p.max_gap, p.cabin, p.alert_enabled, p.target_price,
+                 p.last_alert_price, p.last_seen_price, p.last_alert_at, p.revision, p.created_at,
                  u.email, u.verified_at
           FROM plans p
           JOIN users u ON u.id = p.user_id
@@ -325,8 +352,10 @@ export async function runAlerts(options?: AlertRunOptions): Promise<AlertRunSumm
       trip: String(row.trip) as TripMode,
       minGap: Number(row.min_gap),
       maxGap: Number(row.max_gap),
+      cabin: row.cabin === "business" ? "business" : "economy",
       targetPrice: row.target_price == null ? null : Number(row.target_price),
       lastAlertPrice: row.last_alert_price == null ? null : Number(row.last_alert_price),
+      lastSeenPrice: row.last_seen_price == null ? null : Number(row.last_seen_price),
       revision: Number(row.revision ?? 0),
     };
 
@@ -341,7 +370,14 @@ export async function runAlerts(options?: AlertRunOptions): Promise<AlertRunSumm
       skip("expired");
       continue;
     }
-    const outbound = await getFreshFares(plan.origin, plan.destination, outFrom, last, minSnapshotDay);
+    const outbound = await getFreshFares(
+      plan.origin,
+      plan.destination,
+      outFrom,
+      last,
+      minSnapshotDay,
+      plan.cabin,
+    );
     if (outbound.length * 2 < expectedOutDates) {
       skip("insufficient data");
       continue;
@@ -359,7 +395,14 @@ export async function runAlerts(options?: AlertRunOptions): Promise<AlertRunSumm
       const inFrom = addDays(outFrom, plan.minGap);
       const inTo = addDays(last, plan.maxGap);
       const expectedInDates = diffDays(inFrom, inTo) + 1;
-      const inbound = await getFreshFares(plan.destination, plan.origin, inFrom, inTo, minSnapshotDay);
+      const inbound = await getFreshFares(
+        plan.destination,
+        plan.origin,
+        inFrom,
+        inTo,
+        minSnapshotDay,
+        plan.cabin,
+      );
       if (inbound.length * 2 < expectedInDates) {
         skip("insufficient data");
         continue;
@@ -373,13 +416,51 @@ export async function runAlerts(options?: AlertRunOptions): Promise<AlertRunSumm
     }
 
     const B = best.bestPrice;
-    if (plan.targetPrice !== null && B > plan.targetPrice) {
-      skip("above target");
-      continue;
-    }
-    if (plan.lastAlertPrice !== null && B >= plan.lastAlertPrice) {
-      skip("no price drop");
-      continue;
+
+    const updateSeenOnly = async (resetAlertPrice = false) => {
+      if (dryRun) return;
+      if (resetAlertPrice) {
+        await withBusyRetry(() =>
+          client.execute({
+            sql: "UPDATE plans SET last_alert_price = NULL, last_seen_price = ? WHERE id = ? AND revision = ?",
+            args: [B, plan.id, plan.revision],
+          }),
+        );
+      } else {
+        await withBusyRetry(() =>
+          client.execute({
+            sql: "UPDATE plans SET last_seen_price = ? WHERE id = ? AND revision = ?",
+            args: [B, plan.id, plan.revision],
+          }),
+        );
+      }
+    };
+
+    if (plan.targetPrice === null) {
+      // Mode A: No limit ('price drop' alerts)
+      if (plan.lastSeenPrice === null) {
+        await updateSeenOnly(false);
+        skip("baseline set");
+        continue;
+      }
+      const minDrop = Math.max(300, Math.round(plan.lastSeenPrice * 0.03));
+      if (B > plan.lastSeenPrice - minDrop) {
+        await updateSeenOnly(false);
+        skip("no price drop");
+        continue;
+      }
+    } else {
+      // Mode B: With limit ('below limit' alerts with re-arming)
+      if (B > plan.targetPrice) {
+        await updateSeenOnly(plan.lastAlertPrice !== null);
+        skip("above target");
+        continue;
+      }
+      if (plan.lastAlertPrice !== null && B >= plan.lastAlertPrice) {
+        await updateSeenOnly(false);
+        skip("no price drop");
+        continue;
+      }
     }
 
     if (dryRun) {
@@ -392,11 +473,13 @@ export async function runAlerts(options?: AlertRunOptions): Promise<AlertRunSumm
     const canPush = pushChannelAvailable && deviceTokens.length > 0;
 
     if (!canEmail && !canPush) {
+      await updateSeenOnly(false);
       skip("no channel");
       continue;
     }
 
     if (sent >= maxEmails) {
+      await updateSeenOnly(false);
       skip("cap reached");
       continue;
     }
@@ -421,17 +504,19 @@ export async function runAlerts(options?: AlertRunOptions): Promise<AlertRunSumm
     );
 
     if ((claimRs.rowsAffected ?? 0) === 0) {
+      await updateSeenOnly(false);
       skip("already claimed");
       continue;
     }
 
     wouldAlert++;
 
+    const formatPrice = await getFormatterFn(plan.userId);
     let delivered = false;
 
     if (canEmail) {
       try {
-        const emailPayload = buildAlertEmail(plan, best, { appOrigin, appSecret });
+        const emailPayload = buildAlertEmail(plan, best, { appOrigin, appSecret, formatPrice });
         await sendMailFn(emailPayload);
         email_sent++;
         delivered = true;
@@ -441,7 +526,7 @@ export async function runAlerts(options?: AlertRunOptions): Promise<AlertRunSumm
     }
 
     if (canPush) {
-      const pushPayload = buildAlertPush(plan, best, { appOrigin });
+      const pushPayload = buildAlertPush(plan, best, { appOrigin, formatPrice });
       for (const token of deviceTokens) {
         try {
           const pushRes = await sendPushFn(token, pushPayload);
@@ -461,10 +546,19 @@ export async function runAlerts(options?: AlertRunOptions): Promise<AlertRunSumm
     if (!delivered) {
       failed++;
       await withBusyRetry(() =>
-        client.execute({
-          sql: "UPDATE alert_deliveries SET status = 'failed' WHERE plan_id = ? AND day = ?",
-          args: [plan.id, today],
-        }),
+        client.batch(
+          [
+            {
+              sql: "UPDATE alert_deliveries SET status = 'failed' WHERE plan_id = ? AND day = ?",
+              args: [plan.id, today],
+            },
+            {
+              sql: "UPDATE plans SET last_seen_price = ? WHERE id = ? AND revision = ?",
+              args: [B, plan.id, plan.revision],
+            },
+          ],
+          "write",
+        ),
       );
       continue;
     }
@@ -479,8 +573,8 @@ export async function runAlerts(options?: AlertRunOptions): Promise<AlertRunSumm
             args: [plan.id, today],
           },
           {
-            sql: "UPDATE plans SET last_alert_price = ?, last_alert_at = ? WHERE id = ? AND revision = ?",
-            args: [B, nowIso, plan.id, plan.revision],
+            sql: "UPDATE plans SET last_alert_price = ?, last_seen_price = ?, last_alert_at = ? WHERE id = ? AND revision = ?",
+            args: [B, B, nowIso, plan.id, plan.revision],
           },
         ],
         "write",
