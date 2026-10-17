@@ -338,7 +338,7 @@ export async function deletePlan(userId: string, planId: string): Promise<boolea
 export async function listRecentSearches(userId: string): Promise<SearchParams[]> {
   const client = await getClient();
   const rs = await client.execute({
-    sql: `SELECT origin, destination, month, trip, min_gap, max_gap
+    sql: `SELECT origin, destination, month, trip, min_gap, max_gap, cabin
           FROM recent_searches
           WHERE user_id = ?
           ORDER BY created_at DESC, rowid DESC
@@ -352,6 +352,7 @@ export async function listRecentSearches(userId: string): Promise<SearchParams[]
     trip: String(r.trip) as TripMode,
     minGap: Number(r.min_gap),
     maxGap: Number(r.max_gap),
+    cabin: r.cabin === "business" ? "business" : "economy",
   }));
 }
 

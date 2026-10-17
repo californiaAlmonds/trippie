@@ -27,7 +27,7 @@ test("parseResults flags blocks, empty results and unparseable pages", () => {
 });
 
 test("legsFor covers the month outbound and month+gap inbound, skipping past dates", () => {
-  const p = { origin: "BLR", destination: "IXZ", month: "2027-02", trip: "round" as const, minGap: 5, maxGap: 7 };
+  const p = { origin: "BLR", destination: "IXZ", month: "2027-02", trip: "round" as const, minGap: 5, maxGap: 7, cabin: "economy" as const };
   const [out, inn] = legsFor(p, "2027-02-20");
   assert.equal(out.dates[0], "2027-02-20");
   assert.equal(out.dates.at(-1), "2027-02-28");
@@ -37,7 +37,7 @@ test("legsFor covers the month outbound and month+gap inbound, skipping past dat
 });
 
 test("legsFor returns only the outbound leg for oneway", () => {
-  const p = { origin: "BLR", destination: "IXZ", month: "2027-02", trip: "oneway" as const, minGap: 0, maxGap: 0 };
+  const p = { origin: "BLR", destination: "IXZ", month: "2027-02", trip: "oneway" as const, minGap: 0, maxGap: 0, cabin: "economy" as const };
   const legs = legsFor(p, "2027-02-01");
   assert.equal(legs.length, 1);
   assert.equal(legs[0].origin, "BLR");

@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { type Client, createClient, type InStatement, type ResultSet, type TransactionMode } from "@libsql/client";
 import { migrate } from "./migrations.ts";
-import type { DayFare } from "./types.ts";
+import type { Cabin, DayFare } from "./types.ts";
 import { addDays, computeWindows, monthBounds } from "./windows.ts";
 
 export type FareStatus = "ok" | "no_flights" | "blocked" | "parse_error";
@@ -127,16 +127,22 @@ export async function finishRun(id: number, ok: number, failed: number, note: st
 }
 
 /** Most recent successful fare per travel date. */
-export async function getLatestFares(origin: string, destination: string, from: string, to: string): Promise<DayFare[]> {
+export async function getLatestFares(
+  origin: string,
+  destination: string,
+  from: string,
+  to: string,
+  cabin: Cabin = "economy",
+): Promise<DayFare[]> {
   const rs = await (await db()).execute({
     sql: `SELECT f.travel_date AS date, f.price, f.airline, f.stops FROM fares f
-          WHERE f.origin = ? AND f.destination = ? AND f.travel_date BETWEEN ? AND ?
+          WHERE f.origin = ? AND f.destination = ? AND f.cabin = ? AND f.travel_date BETWEEN ? AND ?
             AND f.status = 'ok' AND f.price IS NOT NULL
             AND f.snapshot_day = (SELECT MAX(snapshot_day) FROM fares
                                   WHERE origin = f.origin AND destination = f.destination
-                                    AND travel_date = f.travel_date AND status = 'ok')
+                                    AND travel_date = f.travel_date AND cabin = f.cabin AND status = 'ok')
           ORDER BY f.travel_date`,
-    args: [origin, destination, from, to],
+    args: [origin, destination, cabin, from, to],
   });
   return rs.rows.map((r) => ({
     date: String(r.date),
@@ -154,17 +160,18 @@ export async function getFreshFares(
   from: string,
   to: string,
   minSnapshotDay: string,
+  cabin: Cabin = "economy",
 ): Promise<DayFare[]> {
   const rs = await (await db()).execute({
     sql: `SELECT f.travel_date AS date, f.price, f.airline, f.stops FROM fares f
-          WHERE f.origin = ? AND f.destination = ? AND f.travel_date BETWEEN ? AND ?
+          WHERE f.origin = ? AND f.destination = ? AND f.cabin = ? AND f.travel_date BETWEEN ? AND ?
             AND f.status = 'ok' AND f.price IS NOT NULL
             AND f.snapshot_day >= ?
             AND f.snapshot_day = (SELECT MAX(snapshot_day) FROM fares
                                   WHERE origin = f.origin AND destination = f.destination
-                                    AND travel_date = f.travel_date AND status = 'ok')
+                                    AND travel_date = f.travel_date AND cabin = f.cabin AND status = 'ok')
           ORDER BY f.travel_date`,
-    args: [origin, destination, from, to, minSnapshotDay],
+    args: [origin, destination, cabin, from, to, minSnapshotDay],
   });
   return rs.rows.map((r) => ({
     date: String(r.date),
