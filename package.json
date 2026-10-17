@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --test src/lib/windows.test.ts src/lib/scrape/parse.test.ts src/lib/search.test.ts src/lib/migrations.test.ts src/lib/auth/password.test.ts src/lib/auth/session-core.test.ts src/lib/auth/guard.test.ts src/lib/auth/rateLimit.test.ts src/lib/auth/tokens.test.ts src/lib/plans/index.test.ts src/lib/alerts/unsubscribe.test.ts src/lib/alerts/engine.test.ts src/lib/push/devices.test.ts src/lib/push/fcm.test.ts src/components/native/safeUrl.test.ts",
+    "test": "node --test src/lib/windows.test.ts src/lib/scrape/parse.test.ts src/lib/search.test.ts src/lib/migrations.test.ts src/lib/auth/password.test.ts src/lib/auth/session-core.test.ts src/lib/auth/guard.test.ts src/lib/auth/rateLimit.test.ts src/lib/auth/tokens.test.ts src/lib/plans/index.test.ts src/lib/alerts/unsubscribe.test.ts src/lib/alerts/engine.test.ts src/lib/push/devices.test.ts src/lib/push/fcm.test.ts src/components/native/safeUrl.test.ts src/lib/geo/airports.test.ts src/lib/geo/currency.test.ts src/lib/geo/rates.test.ts src/lib/prefs.test.ts",
     "scrape": "bun scripts/scrape.ts"
   },
   "dependencies": {

@@ -205,6 +205,10 @@ export async function deleteUserAccount(userId: string): Promise<void> {
         args: [userId],
       },
       {
+        sql: "DELETE FROM user_prefs WHERE user_id = ?",
+        args: [userId],
+      },
+      {
         sql: "DELETE FROM email_tokens WHERE user_id = ?",
         args: [userId],
       },
