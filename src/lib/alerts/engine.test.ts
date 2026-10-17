@@ -6,6 +6,8 @@ import { test } from "node:test";
 import { createUser } from "../auth/users.ts";
 import type { SendMailInput } from "../mailer.ts";
 import { createPlan, listPlans, updatePlan } from "../plans/index.ts";
+import { listUserDeviceTokens, registerDevice } from "../push/devices.ts";
+import type { PushMessageInput } from "../push/fcm.ts";
 import { type FareRecord, getClient, saveFares } from "../store.ts";
 import { addDays, monthBounds } from "../windows.ts";
 import { runAlerts } from "./engine.ts";
@@ -617,6 +619,218 @@ test("alerts engine current-month evaluation: ignores past departure dates and m
   } finally {
     if (prevUrl === undefined) delete process.env.TURSO_DATABASE_URL;
     else process.env.TURSO_DATABASE_URL = prevUrl;
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // Windows SQLite file handle may release asynchronously on process exit
+    }
+  }
+});
+
+test("alerts engine multi-channel: push-only delivery, no-channel skip before claim, partial/full failure, invalid token pruning, and relative URL fallback", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "trippie-alerts-push-"));
+  const dbPath = join(dir, "push-alerts.db").replace(/\\/g, "/");
+  const prevUrl = process.env.TURSO_DATABASE_URL;
+  const prevHost = process.env.SMTP_HOST;
+  const prevSecret = process.env.APP_SECRET;
+  const prevOrigin = process.env.APP_ORIGIN;
+  const prevFcm = process.env.FCM_SERVICE_ACCOUNT;
+  process.env.TURSO_DATABASE_URL = `file:${dbPath}`;
+  delete process.env.SMTP_HOST;
+  delete process.env.APP_SECRET;
+  delete process.env.APP_ORIGIN;
+  delete process.env.FCM_SERVICE_ACCOUNT;
+
+  try {
+    const client = await getClient();
+    const userWithDevicesRes = await createUser("pushuser@example.com", "scrypt$hash", { verified: true });
+    const userNoDevicesRes = await createUser("nodevice@example.com", "scrypt$hash", { verified: true });
+    assert.ok(userWithDevicesRes.ok && userNoDevicesRes.ok);
+    const userWithDevices = userWithDevicesRes.user;
+    const userNoDevices = userNoDevicesRes.user;
+
+    const validToken = "fcm_valid_token_123456789012345";
+    const staleToken = "fcm_stale_token_123456789012345";
+    await registerDevice(userWithDevices.id, validToken, "android", NOW);
+    await registerDevice(userWithDevices.id, staleToken, "android", NOW);
+
+    const planPushRes = await createPlan(
+      userWithDevices.id,
+      true,
+      {
+        origin: "BLR",
+        destination: "IXZ",
+        month: "2027-02",
+        trip: "round",
+        minGap: 5,
+        maxGap: 7,
+        alertEnabled: true,
+        targetPrice: 25000,
+      },
+      NOW,
+    );
+    const planNoChannelRes = await createPlan(
+      userNoDevices.id,
+      true,
+      {
+        origin: "BLR",
+        destination: "IXZ",
+        month: "2027-02",
+        trip: "oneway",
+        alertEnabled: true,
+        targetPrice: 15000,
+      },
+      NOW,
+    );
+    assert.ok(planPushRes.ok && planNoChannelRes.ok);
+    const planPushId = planPushRes.plan.id;
+    const planNoChannelId = planNoChannelRes.plan.id;
+
+    // Seed fares: outbound 11159, inbound 12000 => round-trip best = 23159
+    const { first, last } = monthBounds("2027-02");
+    await saveFares([
+      ...buildMonthFares("BLR", "IXZ", first, last, TODAY, 11159),
+      ...buildMonthFares("IXZ", "BLR", addDays(first, 5), addDays(last, 7), TODAY, 12000),
+    ]);
+
+    // (d) Dry-run when neither channel is configured changes no state
+    const dryRes = await runAlerts({ now: NOW });
+    assert.equal(dryRes.dryRun, true);
+    assert.equal(dryRes.considered, 2);
+    assert.equal(dryRes.wouldAlert, 2);
+    assert.equal(dryRes.sent, 0);
+    assert.equal(dryRes.email_sent, 0);
+    assert.equal(dryRes.push_sent, 0);
+
+    // (a) Push-only (mail unconfigured, push configured, user1 has devices, user2 has 0 devices)
+    // and (b) user2 has no deliverable channel => skipped with 'no channel' BEFORE claiming (no ledger row)
+    const pushesSent: Array<{ token: string; payload: PushMessageInput }> = [];
+    const claimedPlans: string[] = [];
+
+    const pushOnlySummary = await runAlerts({
+      now: NOW,
+      hooks: {
+        beforeClaim: (p) => {
+          claimedPlans.push(p.id);
+        },
+      },
+      sendPush: async (token, payload) => {
+        if (token === staleToken) {
+          return "invalid_token";
+        }
+        pushesSent.push({ token, payload });
+        return "ok";
+      },
+    });
+
+    assert.equal(pushOnlySummary.dryRun, false);
+    assert.equal(pushOnlySummary.considered, 2);
+    assert.equal(pushOnlySummary.sent, 1);
+    assert.equal(pushOnlySummary.email_sent, 0);
+    assert.equal(pushOnlySummary.push_sent, 1);
+    assert.equal(pushOnlySummary.invalid_tokens_removed, 1);
+    assert.equal(pushOnlySummary.skipped["no channel"], 1);
+
+    // User without devices was skipped BEFORE beforeClaim and has no ledger row
+    assert.deepEqual(claimedPlans, [planPushId]);
+    const noChanLedger = await client.execute({
+      sql: "SELECT COUNT(*) AS c FROM alert_deliveries WHERE plan_id = ?",
+      args: [planNoChannelId],
+    });
+    assert.equal(Number(noChanLedger.rows[0]?.c), 0);
+
+    // Stale token was removed from devices, valid token remains
+    assert.deepEqual(await listUserDeviceTokens(userWithDevices.id), [validToken]);
+
+    // Verify push payload formatting and relative URL fallback when APP_ORIGIN is unset
+    assert.equal(pushesSent.length, 1);
+    assert.equal(pushesSent[0]!.token, validToken);
+    assert.equal(pushesSent[0]!.payload.title, "BLR → IXZ from ₹23,159");
+    assert.equal(pushesSent[0]!.payload.body, "February 2027 · best 2027-02-01 – 2027-02-06");
+    assert.equal(
+      pushesSent[0]!.payload.url,
+      "/?origin=BLR&destination=IXZ&month=2027-02&trip=round&minGap=5&maxGap=7",
+    );
+    assert.equal(pushesSent[0]!.payload.tag, planPushId);
+
+    // Verify ledger marked 'sent' and baseline advanced to 23159
+    const pushLedger = await client.execute({
+      sql: "SELECT status FROM alert_deliveries WHERE plan_id = ? AND day = ?",
+      args: [planPushId, TODAY],
+    });
+    assert.equal(String(pushLedger.rows[0]?.status), "sent");
+    assert.equal((await listPlans(userWithDevices.id, NOW))[0]?.lastAlertPrice, 23159);
+
+    // Disable second plan now that (b) no-channel skip is verified
+    await updatePlan(userNoDevices.id, true, planNoChannelId, { alertEnabled: false }, NOW);
+
+    // (c1) Next UTC day, price drops to 21000 (10000 + 11000); email fails but push succeeds => 'sent' and baseline advances
+    const day2Now = new Date("2026-10-17T08:00:00.000Z");
+    await saveFares([
+      ...buildMonthFares("BLR", "IXZ", first, last, "2026-10-17", 10000),
+      ...buildMonthFares("IXZ", "BLR", addDays(first, 5), addDays(last, 7), "2026-10-17", 11000),
+    ]);
+
+    const partialSummary = await runAlerts({
+      now: day2Now,
+      appSecret: TEST_SECRET,
+      appOrigin: "https://trippie-mu.vercel.app",
+      sendMail: async () => {
+        throw new Error("SMTP down");
+      },
+      sendPush: async (token, payload) => {
+        pushesSent.push({ token, payload });
+        return "ok";
+      },
+    });
+    assert.equal(partialSummary.sent, 1);
+    assert.equal(partialSummary.failed, 0);
+    assert.equal(partialSummary.email_sent, 0);
+    assert.equal(partialSummary.push_sent, 1);
+    assert.equal(
+      pushesSent[1]!.payload.url,
+      "https://trippie-mu.vercel.app/?origin=BLR&destination=IXZ&month=2027-02&trip=round&minGap=5&maxGap=7",
+    );
+    assert.equal((await listPlans(userWithDevices.id, day2Now))[0]?.lastAlertPrice, 21000);
+
+    // (c2) Day 3, price drops to 19000 (9000 + 10000); both email and push fail ('error') => 'failed', baseline stays 21000, device NOT deleted
+    const day3Now = new Date("2026-10-18T08:00:00.000Z");
+    await saveFares([
+      ...buildMonthFares("BLR", "IXZ", first, last, "2026-10-18", 9000),
+      ...buildMonthFares("IXZ", "BLR", addDays(first, 5), addDays(last, 7), "2026-10-18", 10000),
+    ]);
+
+    const bothFailSummary = await runAlerts({
+      now: day3Now,
+      appSecret: TEST_SECRET,
+      appOrigin: "https://trippie-mu.vercel.app",
+      sendMail: async () => {
+        throw new Error("SMTP still down");
+      },
+      sendPush: async () => "error",
+    });
+    assert.equal(bothFailSummary.sent, 0);
+    assert.equal(bothFailSummary.failed, 1);
+    assert.equal(bothFailSummary.email_sent, 0);
+    assert.equal(bothFailSummary.push_sent, 0);
+    assert.equal(bothFailSummary.invalid_tokens_removed, 0);
+    assert.equal((await listPlans(userWithDevices.id, day3Now))[0]?.lastAlertPrice, 21000);
+    assert.deepEqual(await listUserDeviceTokens(userWithDevices.id), [validToken]);
+
+    const day3Ledger = await client.execute({
+      sql: "SELECT status FROM alert_deliveries WHERE plan_id = ? AND day = '2026-10-18'",
+      args: [planPushId],
+    });
+    assert.equal(String(day3Ledger.rows[0]?.status), "failed");
+
+    client.close();
+  } finally {
+    if (prevUrl === undefined) delete process.env.TURSO_DATABASE_URL;
+    else process.env.TURSO_DATABASE_URL = prevUrl;
+    if (prevHost !== undefined) process.env.SMTP_HOST = prevHost;
+    if (prevSecret !== undefined) process.env.APP_SECRET = prevSecret;
+    if (prevOrigin !== undefined) process.env.APP_ORIGIN = prevOrigin;
+    if (prevFcm !== undefined) process.env.FCM_SERVICE_ACCOUNT = prevFcm;
     try {
       rmSync(dir, { recursive: true, force: true });
     } catch {

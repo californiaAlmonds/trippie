@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { SearchResult, TripMode } from "@/lib/search";
 import type { DayFare, TripWindow } from "@/lib/types";
 import AccountSlot from "./AccountSlot";
@@ -13,6 +13,7 @@ import BookingPanel from "./BookingPanel";
 import DayList from "./DayList";
 import HistoryPanel from "./HistoryPanel";
 import { BrandMarkIcon } from "./icons";
+import NativeBridge, { parseDeepLinkQuery } from "./native/NativeBridge";
 import OneWayBookingPanel from "./OneWayBookingPanel";
 import PriceCalendar from "./PriceCalendar";
 import SavedPlansDrawer from "./plans/SavedPlansDrawer";
@@ -153,6 +154,24 @@ function PlannerContent({
   useEffect(() => {
     registerReuse(reuse);
   }, [registerReuse, reuse]);
+
+  const deepLinkHandledRef = useRef(false);
+
+  useEffect(() => {
+    if (deepLinkHandledRef.current) return;
+    if (typeof window === "undefined") return;
+    const q = parseDeepLinkQuery(window.location.search);
+    if (!q) return;
+    deepLinkHandledRef.current = true;
+    window.history.replaceState(
+      null,
+      "",
+      window.location.pathname + window.location.hash,
+    );
+    queueMicrotask(() => {
+      reuse(q);
+    });
+  }, [reuse]);
 
   function search(e: React.FormEvent) {
     e.preventDefault();
@@ -358,6 +377,7 @@ export default function Planner({ defaultMonth }: { defaultMonth: string }) {
 
   return (
     <AccountProvider onSearchAgain={handleSearchAgain}>
+      <NativeBridge />
       <PlannerContent
         defaultMonth={defaultMonth}
         registerReuse={registerReuse}

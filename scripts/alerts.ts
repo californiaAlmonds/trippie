@@ -11,11 +11,11 @@ async function main() {
 
     if (summary.dryRun) {
       console.log(
-        `alerts [dry-run]: considered=${summary.considered} would_alert=${summary.wouldAlert} skipped={${skippedParts || "none"}}`,
+        `alerts [dry-run]: considered=${summary.considered} would_alert=${summary.wouldAlert} email_sent=${summary.email_sent} push_sent=${summary.push_sent} invalid_tokens_removed=${summary.invalid_tokens_removed} skipped={${skippedParts || "none"}}`,
       );
     } else {
       console.log(
-        `alerts: considered=${summary.considered} sent=${summary.sent} failed=${summary.failed} skipped={${skippedParts || "none"}}`,
+        `alerts: considered=${summary.considered} sent=${summary.sent} email_sent=${summary.email_sent} push_sent=${summary.push_sent} invalid_tokens_removed=${summary.invalid_tokens_removed} failed=${summary.failed} skipped={${skippedParts || "none"}}`,
       );
     }
   } finally {

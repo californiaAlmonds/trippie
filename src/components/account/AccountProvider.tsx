@@ -21,6 +21,7 @@ import {
 } from "./api";
 
 export type AccountStatus = "loading" | "authenticated" | "guest";
+export type PushPermissionStatus = "off" | "on" | "blocked";
 
 export interface CreatePlanInput {
   origin: string;
@@ -69,9 +70,19 @@ export interface AccountContextValue {
   ) => Promise<ApiResult<{ plan: Plan }>>;
   deletePlan: (id: string | number) => Promise<ApiResult<null>>;
   searchAgain: (q: Query) => void;
+  isNative: boolean;
+  setIsNative: (val: boolean) => void;
+  pushStatus: PushPermissionStatus;
+  setPushStatus: (val: PushPermissionStatus) => void;
+  pushPromptOpen: boolean;
+  setPushPromptOpen: (val: boolean) => void;
+  requestPushPermission: () => Promise<void>;
 }
 
 const AccountContext = createContext<AccountContextValue | null>(null);
+
+const PUSH_TOKEN_KEY = "trippie.pushToken";
+const PUSH_PROMPTED_KEY = "trippie.pushPrompted";
 
 export function AccountProvider({
   children,
@@ -94,6 +105,39 @@ export function AccountProvider({
   const [plansOpen, setPlansOpen] = useState(false);
   const [plans, setPlans] = useState<Plan[]>([]);
   const [plansLoading, setPlansLoading] = useState(false);
+
+  const [isNative, setIsNative] = useState(false);
+  const [pushStatus, setPushStatus] = useState<PushPermissionStatus>("off");
+  const [pushPromptOpen, setPushPromptOpen] = useState(false);
+
+  const promptOnceForPush = useCallback(() => {
+    if (!isNative || pushStatus !== "off") return;
+    try {
+      if (window.localStorage.getItem(PUSH_PROMPTED_KEY) === "1") return;
+      window.localStorage.setItem(PUSH_PROMPTED_KEY, "1");
+    } catch {
+      // Ignore storage errors
+    }
+    setPushPromptOpen(true);
+  }, [isNative, pushStatus]);
+
+  const requestPushPermission = useCallback(async () => {
+    if (!isNative) return;
+    try {
+      const { PushNotifications } = await import("@capacitor/push-notifications");
+      const perm = await PushNotifications.requestPermissions();
+      if (perm.receive === "granted") {
+        setPushStatus("on");
+        await PushNotifications.register();
+      } else if (perm.receive === "denied") {
+        setPushStatus("blocked");
+      } else {
+        setPushStatus("off");
+      }
+    } catch {
+      // Ignore permission request failure
+    }
+  }, [isNative]);
 
   const refresh = useCallback(async (): Promise<AccountUser | null> => {
     const res = await api<{ user: AccountUser | null }>("/api/auth/me");
@@ -195,6 +239,21 @@ export function AccountProvider({
   );
 
   const signOut = useCallback(async () => {
+    try {
+      const savedToken =
+        typeof window !== "undefined"
+          ? window.localStorage.getItem(PUSH_TOKEN_KEY)
+          : null;
+      if (savedToken) {
+        await api("/api/devices", {
+          method: "DELETE",
+          body: { token: savedToken },
+        });
+        window.localStorage.removeItem(PUSH_TOKEN_KEY);
+      }
+    } catch {
+      // Ignore storage or network failure during sign-out cleanup
+    }
     await api("/api/auth/logout", { method: "POST" });
     setUser(null);
     setStatus("guest");
@@ -209,6 +268,11 @@ export function AccountProvider({
         body: { password },
       });
       if (res.ok) {
+        try {
+          window.localStorage.removeItem(PUSH_TOKEN_KEY);
+        } catch {
+          // Ignore storage errors
+        }
         setUser(null);
         setStatus("guest");
         setPlans([]);
@@ -267,6 +331,9 @@ export function AccountProvider({
           created,
           ...prev.filter((p) => String(p.id) !== String(created.id)),
         ]);
+        if (created.alertEnabled) {
+          promptOnceForPush();
+        }
         return res;
       }
 
@@ -287,12 +354,15 @@ export function AccountProvider({
           createdAt: new Date().toISOString(),
         };
         setPlans((prev) => [fallbackPlan, ...prev].slice(0, 20));
+        if (fallbackPlan.alertEnabled) {
+          promptOnceForPush();
+        }
         return { ok: true, status: 201, data: { plan: fallbackPlan } };
       }
 
       return res;
     },
-    [user?.verified],
+    [user?.verified, promptOnceForPush],
   );
 
   const updatePlan = useCallback(
@@ -334,17 +404,23 @@ export function AccountProvider({
         setPlans((prev) =>
           prev.map((p) => (String(p.id) === String(id) ? updated : p)),
         );
+        if (patch.alertEnabled === true && updated.alertEnabled) {
+          promptOnceForPush();
+        }
         return res;
       }
 
       if (isEndpointUnavailable(res) && optimisticPlan) {
+        if (patch.alertEnabled === true) {
+          promptOnceForPush();
+        }
         return { ok: true, status: 200, data: { plan: optimisticPlan } };
       }
 
       setPlans(snapshot);
       return res;
     },
-    [],
+    [promptOnceForPush],
   );
 
   const deletePlan = useCallback(
@@ -405,6 +481,13 @@ export function AccountProvider({
       updatePlan,
       deletePlan,
       searchAgain,
+      isNative,
+      setIsNative,
+      pushStatus,
+      setPushStatus,
+      pushPromptOpen,
+      setPushPromptOpen,
+      requestPushPermission,
     }),
     [
       user,
@@ -428,6 +511,10 @@ export function AccountProvider({
       updatePlan,
       deletePlan,
       searchAgain,
+      isNative,
+      pushStatus,
+      pushPromptOpen,
+      requestPushPermission,
     ],
   );
 
@@ -458,6 +545,13 @@ const FALLBACK_ACCOUNT_CONTEXT: AccountContextValue = {
   updatePlan: async () => ({ ok: false, status: 0, data: null, error: "Unavailable" }),
   deletePlan: async () => ({ ok: false, status: 0, data: null, error: "Unavailable" }),
   searchAgain: () => undefined,
+  isNative: false,
+  setIsNative: () => undefined,
+  pushStatus: "off",
+  setPushStatus: () => undefined,
+  pushPromptOpen: false,
+  setPushPromptOpen: () => undefined,
+  requestPushPermission: async () => undefined,
 };
 
 export function useAccount(): AccountContextValue {
