@@ -1,7 +1,21 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { parseResults } from "./parse.ts";
+import { fileURLToPath } from "node:url";
+import { findCheapestRowIndex, parseExpandedDetails, parseResults } from "./parse.ts";
 import { legsFor } from "./plan.ts";
+
+interface FixtureEntry {
+  route: string;
+  date: string;
+  cabin: string;
+  collapsed: string;
+  expanded: string;
+}
+
+const fixturesPath = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "google-flights-rows.json");
+const fixtures = JSON.parse(readFileSync(fixturesPath, "utf8")) as Record<string, FixtureEntry>;
 
 const nb = "\u00a0";
 const rows = [
@@ -10,14 +24,138 @@ const rows = [
   "Select flight ₹99",
 ];
 
-test("parseResults picks the cheapest visible row with airline and stops", () => {
+test("parseResults picks the cheapest visible row with times, day offset, duration, airline, and stops", () => {
   const out = parseResults("https://www.google.com/travel/flights?q=x", "body", rows);
-  assert.deepEqual(out, { status: "ok", fare: { price: 12734, airline: "IndiGo", stops: 1 } });
+  assert.deepEqual(out, {
+    status: "ok",
+    fare: {
+      price: 12734,
+      airline: "IndiGo",
+      stops: 1,
+      depTime: "22:40",
+      arrTime: "06:50",
+      arrDayOffset: 1,
+      durationMin: 490,
+      flightNo: null,
+      aircraft: null,
+    },
+  });
+});
+
+test("parseResults parses real captured Google Flights fixtures (economy nonstop, economy 1-stop, +1 day arrival, business 1-stop)", () => {
+  // 1. Economy 1-stop (multi-leg stores first leg's flight_no + aircraft)
+  const econ1Stop = parseResults(
+    "https://www.google.com/travel/flights?q=x",
+    "body",
+    [fixtures.economy_one_stop.collapsed, fixtures.economy_nonstop.collapsed],
+    fixtures.economy_one_stop.expanded,
+  );
+  assert.deepEqual(econ1Stop, {
+    status: "ok",
+    fare: {
+      price: 13350,
+      airline: "IndiGo",
+      stops: 1,
+      depTime: "17:50",
+      arrTime: "23:15",
+      arrDayOffset: null,
+      durationMin: 325,
+      flightNo: "6E 895",
+      aircraft: "Airbus A320neo",
+    },
+  });
+
+  // 2. Economy nonstop
+  const econNonstop = parseResults(
+    "https://www.google.com/travel/flights?q=x",
+    "body",
+    [fixtures.economy_nonstop.collapsed],
+    fixtures.economy_nonstop.expanded,
+  );
+  assert.deepEqual(econNonstop, {
+    status: "ok",
+    fare: {
+      price: 14377,
+      airline: "Akasa Air",
+      stops: 0,
+      depTime: "18:25",
+      arrTime: "21:15",
+      arrDayOffset: null,
+      durationMin: 170,
+      flightNo: "QP 1265",
+      aircraft: "Boeing 737MAX 8 Passenger",
+    },
+  });
+
+  // 3. Economy +1 day arrival
+  const nextDay = parseResults(
+    "https://www.google.com/travel/flights?q=x",
+    "body",
+    [fixtures.economy_next_day_arrival.collapsed],
+    fixtures.economy_next_day_arrival.expanded,
+  );
+  assert.deepEqual(nextDay, {
+    status: "ok",
+    fare: {
+      price: 13766,
+      airline: "IndiGo",
+      stops: 1,
+      depTime: "22:40",
+      arrTime: "06:50",
+      arrDayOffset: 1,
+      durationMin: 490,
+      flightNo: "6E 6174",
+      aircraft: "Airbus A321neo",
+    },
+  });
+
+  // 4. Business class 1-stop
+  const biz = parseResults(
+    "https://www.google.com/travel/flights?q=x",
+    "body",
+    [fixtures.business_one_stop.collapsed],
+    fixtures.business_one_stop.expanded,
+  );
+  assert.deepEqual(biz, {
+    status: "ok",
+    fare: {
+      price: 45449,
+      airline: "IndiGo",
+      stops: 1,
+      depTime: "01:45",
+      arrTime: "07:50",
+      arrDayOffset: null,
+      durationMin: 365,
+      flightNo: "6E 5243",
+      aircraft: "Airbus A321neo",
+    },
+  });
+
+  // 5. ATR 72 aircraft where digits abut airline code ("ATR 726E\u00a07435")
+  assert.deepEqual(parseExpandedDetails("IndiGoEconomyATR 726E\u00a07435"), {
+    flightNo: "6E 7435",
+    aircraft: "ATR 72",
+  });
+
+  assert.equal(findCheapestRowIndex(["Select flight ₹99", fixtures.economy_nonstop.collapsed, fixtures.economy_one_stop.collapsed]), 2);
 });
 
 test("parseResults lets a cheaper 'Cheapest from' tab win", () => {
   const out = parseResults("https://www.google.com/travel/flights", "Cheapest\nfrom ₹9,999", rows);
-  assert.deepEqual(out, { status: "ok", fare: { price: 9999, airline: null, stops: null } });
+  assert.deepEqual(out, {
+    status: "ok",
+    fare: {
+      price: 9999,
+      airline: null,
+      stops: null,
+      depTime: null,
+      arrTime: null,
+      arrDayOffset: null,
+      durationMin: null,
+      flightNo: null,
+      aircraft: null,
+    },
+  });
 });
 
 test("parseResults flags blocks, empty results and unparseable pages", () => {
@@ -45,3 +183,4 @@ test("legsFor returns only the outbound leg for oneway", () => {
   assert.equal(legs[0].dates[0], "2027-02-01");
   assert.equal(legs[0].dates.at(-1), "2027-02-28");
 });
+

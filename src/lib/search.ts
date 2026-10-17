@@ -1,5 +1,6 @@
 import { getProvider } from "./providers/index.ts";
-import type { Cabin, DayFare, TripWindow } from "./types.ts";
+import { dbConfigured, getBestWindowStats, getFreshness, getRouteStats } from "./store.ts";
+import type { Cabin, DayFare, PriceStats, RouteFreshness, TripWindow } from "./types.ts";
 import { addDays, computeWindows, monthBounds } from "./windows.ts";
 
 export type TripMode = "round" | "oneway";
@@ -25,6 +26,12 @@ export interface SearchResult {
   calendar: { date: string; total: number; gap?: number }[];
   outbound: DayFare[];
   inbound: DayFare[];
+  stats: {
+    outbound: PriceStats | null;
+    inbound: PriceStats | null;
+    total: PriceStats | null;
+  };
+  freshness: RouteFreshness;
 }
 
 export function parseSearch(sp: URLSearchParams): SearchParams | { error: string } {
@@ -52,17 +59,45 @@ const cache = new Map<string, { at: number; value: SearchResult }>();
 
 export async function runSearch(p: SearchParams, limit = 60): Promise<SearchResult> {
   const provider = getProvider();
-  const key = `${provider.name}|${p.trip}|${p.cabin}|${p.origin}|${p.destination}|${p.month}|${p.minGap}|${p.maxGap}`;
-  const hit = cache.get(key);
-  if (hit && Date.now() - hit.at < TTL_MS) return hit.value;
-
   const { first, last } = monthBounds(p.month);
+  const inFrom = addDays(first, p.minGap);
+  const inTo = addDays(last, p.maxGap);
+
+  const hasDb = dbConfigured();
+  const [freshness, stats] = hasDb
+    ? await Promise.all([
+        getFreshness(p),
+        (async () => {
+          if (p.trip === "oneway") {
+            const outStats = await getRouteStats(p.origin, p.destination, first, last, p.cabin);
+            return { outbound: outStats, inbound: null, total: outStats };
+          }
+          const [outStats, inStats, totalStats] = await Promise.all([
+            getRouteStats(p.origin, p.destination, first, last, p.cabin),
+            getRouteStats(p.destination, p.origin, inFrom, inTo, p.cabin),
+            getBestWindowStats(p.origin, p.destination, p.month, p.minGap, p.maxGap, p.cabin),
+          ]);
+          return { outbound: outStats, inbound: inStats, total: totalStats };
+        })(),
+      ])
+    : [
+        { lastCheckedAt: null, tracked: false, collecting: false } satisfies RouteFreshness,
+        { outbound: null, inbound: null, total: null },
+      ];
+
+  const dbUrl = process.env.TURSO_DATABASE_URL ?? "";
+  const key = `${dbUrl}|${provider.name}|${p.trip}|${p.cabin}|${p.origin}|${p.destination}|${p.month}|${p.minGap}|${p.maxGap}|${freshness.lastCheckedAt ?? ""}`;
+  const hit = cache.get(key);
+  if (hit && Date.now() - hit.at < TTL_MS) {
+    return { ...hit.value, stats, freshness };
+  }
+
   const [outbound, inbound] =
     p.trip === "oneway"
       ? [await provider.getOneWayFares(p.origin, p.destination, first, last, p.cabin), [] as DayFare[]]
       : await Promise.all([
           provider.getOneWayFares(p.origin, p.destination, first, last, p.cabin),
-          provider.getOneWayFares(p.destination, p.origin, addDays(first, p.minGap), addDays(last, p.maxGap), p.cabin),
+          provider.getOneWayFares(p.destination, p.origin, inFrom, inTo, p.cabin),
         ]);
   const days = [...outbound].sort((a, b) => a.price - b.price || (a.date < b.date ? -1 : 1)).slice(0, limit);
   const all = p.trip === "oneway" ? [] : computeWindows(outbound, inbound, p.minGap, p.maxGap);
@@ -84,7 +119,10 @@ export async function runSearch(p: SearchParams, limit = 60): Promise<SearchResu
     calendar,
     outbound,
     inbound,
+    stats,
+    freshness,
   };
   cache.set(key, { at: Date.now(), value });
   return value;
 }
+

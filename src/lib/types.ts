@@ -31,3 +31,19 @@ export interface TripWindow {
   gap: number; // days between departure and return
   total: number;
 }
+
+export interface PriceStats {
+  min: number;
+  max: number;
+  p25: number;
+  median: number;
+  samples: number;
+  since: IsoDate; // first snapshot_day, YYYY-MM-DD
+}
+
+export interface RouteFreshness {
+  lastCheckedAt: string | null;
+  tracked: boolean;
+  collecting: boolean;
+}
+

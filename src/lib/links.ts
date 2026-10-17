@@ -1,10 +1,15 @@
-import type { IsoDate } from "./types.ts";
+import type { Cabin, IsoDate } from "./types.ts";
+
+export interface LinkOptions {
+  currency?: string;
+  cabin?: Cabin;
+}
 
 export interface Site {
   key: string;
   label: string;
   verified: boolean; // URL pattern confirmed to load with prefilled search
-  url: (o: string, d: string, dep: IsoDate, ret?: IsoDate) => string;
+  url: (o: string, d: string, dep: IsoDate, ret?: IsoDate, opts?: LinkOptions) => string;
 }
 
 const dmy = (d: IsoDate) => d.split("-").reverse().join("/");
@@ -16,16 +21,22 @@ export const SITES: Site[] = [
     key: "google",
     label: "Google Flights",
     verified: true,
-    url: (o, d, dep, ret) =>
-      `https://www.google.com/travel/flights?curr=INR&q=${encodeURIComponent(
-        `Flights to ${d} from ${o} on ${dep}${ret ? ` through ${ret}` : " oneway"}`,
-      )}`,
+    url: (o, d, dep, ret, opts) => {
+      const curr = encodeURIComponent(opts?.currency ?? "INR");
+      const cabinSuffix = opts?.cabin === "business" ? " business class" : "";
+      return `https://www.google.com/travel/flights?curr=${curr}&q=${encodeURIComponent(
+        `Flights to ${d} from ${o} on ${dep}${ret ? ` through ${ret}` : " oneway"}${cabinSuffix}`,
+      )}`;
+    },
   },
   {
     key: "kayak",
     label: "Kayak India",
     verified: true,
-    url: (o, d, dep, ret) => `https://www.kayak.co.in/flights/${o}-${d}/${dep}${ret ? `/${ret}` : ""}`,
+    url: (o, d, dep, ret, opts) =>
+      `https://www.kayak.co.in/flights/${o}-${d}/${dep}${ret ? `/${ret}` : ""}${
+        opts?.cabin === "business" ? "/business" : ""
+      }`,
   },
   {
     key: "aviasales",
@@ -40,28 +51,28 @@ export const SITES: Site[] = [
     key: "makemytrip",
     label: "MakeMyTrip",
     verified: false,
-    url: (o, d, dep, ret) =>
+    url: (o, d, dep, ret, opts) =>
       `https://www.makemytrip.com/flight/search?itinerary=${o}-${d}-${dmy(dep)}${
         ret ? `_${d}-${o}-${dmy(ret)}` : ""
-      }&tripType=${ret ? "R" : "O"}&paxType=A-1_C-0_I-0&intl=false&cabinClass=E`,
+      }&tripType=${ret ? "R" : "O"}&paxType=A-1_C-0_I-0&intl=false&cabinClass=${opts?.cabin === "business" ? "B" : "E"}`,
   },
   {
     key: "ixigo",
     label: "ixigo",
     verified: false,
-    url: (o, d, dep, ret) =>
+    url: (o, d, dep, ret, opts) =>
       `https://www.ixigo.com/search/result/flight?from=${o}&to=${d}&date=${dmyCompact(dep)}${
         ret ? `&returnDate=${dmyCompact(ret)}` : ""
-      }&adults=1&children=0&infants=0&class=e`,
+      }&adults=1&children=0&infants=0&class=${opts?.cabin === "business" ? "b" : "e"}`,
   },
   {
     key: "cleartrip",
     label: "Cleartrip",
     verified: false,
-    url: (o, d, dep, ret) =>
-      `https://www.cleartrip.com/flights/results?adults=1&childs=0&infants=0&class=Economy&depart_date=${dmy(dep)}${
-        ret ? `&return_date=${dmy(ret)}` : ""
-      }&from=${o}&to=${d}&intl=n`,
+    url: (o, d, dep, ret, opts) =>
+      `https://www.cleartrip.com/flights/results?adults=1&childs=0&infants=0&class=${
+        opts?.cabin === "business" ? "Business" : "Economy"
+      }&depart_date=${dmy(dep)}${ret ? `&return_date=${dmy(ret)}` : ""}&from=${o}&to=${d}&intl=n`,
   },
   {
     key: "skyscanner",
@@ -78,3 +89,4 @@ export const SITES: Site[] = [
 export function orderedSites(bestKey?: string): Site[] {
   return [...SITES].sort((a, b) => Number(b.key === bestKey) - Number(a.key === bestKey));
 }
+
