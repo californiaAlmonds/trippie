@@ -802,7 +802,7 @@ test("alerts engine multi-channel: push-only delivery, no-channel skip before cl
     assert.equal((await listPlans(userWithDevices.id, day2Now))[0]?.lastAlertPrice, 21000);
     assert.equal((await listPlans(userWithDevices.id, day2Now))[0]?.lastSeenPrice, 21000);
 
-    // (c2) Day 3, price drops to 19000 (9000 + 10000); both email and push fail ('error') => 'failed', baseline stays 21000, device NOT deleted
+    // (c2) Day 3, price drops to 19000 (9000 + 10000); both email and push fail ('error') => 'failed', lastAlertPrice and lastSeenPrice stay 21000, device NOT deleted
     const day3Now = new Date("2026-10-18T08:00:00.000Z");
     await saveFares([
       ...buildMonthFares("BLR", "IXZ", first, last, "2026-10-18", 9000),
@@ -824,7 +824,7 @@ test("alerts engine multi-channel: push-only delivery, no-channel skip before cl
     assert.equal(bothFailSummary.push_sent, 0);
     assert.equal(bothFailSummary.invalid_tokens_removed, 0);
     assert.equal((await listPlans(userWithDevices.id, day3Now))[0]?.lastAlertPrice, 21000);
-    assert.equal((await listPlans(userWithDevices.id, day3Now))[0]?.lastSeenPrice, 19000);
+    assert.equal((await listPlans(userWithDevices.id, day3Now))[0]?.lastSeenPrice, 21000);
     assert.deepEqual(await listUserDeviceTokens(userWithDevices.id), [validToken]);
 
     const day3Ledger = await client.execute({
@@ -932,7 +932,7 @@ test("alerts engine no-limit mode: first run sets baseline silently, drop >= max
     assert.equal(p.lastSeenPrice, 18915);
     assert.equal(p.lastAlertPrice, 18915);
 
-    // Day 1, run 4: another big drop same UTC day to 15000 -> blocked by daily claim (max one alert per plan per UTC day), still updates last_seen_price to 15000
+    // Day 1, run 4: another big drop same UTC day to 15000 -> blocked by daily claim (max one alert per plan per UTC day), leaves last_seen_price untouched at 18915
     await saveFares(buildMonthFares("BLR", "IXZ", first, last, "2026-10-16", 15000));
     const r4 = await runAlerts({
       now: new Date("2026-10-16T20:00:00.000Z"),
@@ -944,7 +944,7 @@ test("alerts engine no-limit mode: first run sets baseline silently, drop >= max
     assert.equal(r4.skipped["already claimed"], 1);
     assert.equal(sentEmails.length, 1);
     p = (await listPlans(user.id, NOW))[0]!;
-    assert.equal(p.lastSeenPrice, 15000);
+    assert.equal(p.lastSeenPrice, 18915);
     assert.equal(p.lastAlertPrice, 18915);
 
     // Day 2, run 1: price rises to 22000 -> updates baseline silently to 22000, sends nothing
@@ -1282,3 +1282,192 @@ test("alerts engine cabin isolation and per-user currency formatter hook in emai
     }
   }
 });
+
+test("alerts engine no-limit mode: insufficient data, no channel, cap reached, already claimed, and delivery failed leave last_seen_price untouched so a later run re-detects the drop", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "trippie-alerts-nolimit-preserve-"));
+  const dbPath = join(dir, "nolimit-preserve.db").replace(/\\/g, "/");
+  const prevUrl = process.env.TURSO_DATABASE_URL;
+  const prevHost = process.env.SMTP_HOST;
+  const prevSecret = process.env.APP_SECRET;
+  const prevFcm = process.env.FCM_SERVICE_ACCOUNT;
+  process.env.TURSO_DATABASE_URL = `file:${dbPath}`;
+
+  try {
+    const client = await getClient();
+    const u1Res = await createUser("u1@example.com", "scrypt$hash", { verified: true });
+    const u2Res = await createUser("u2@example.com", "scrypt$hash", { verified: true });
+    assert.ok(u1Res.ok && u2Res.ok);
+    const u1 = u1Res.user;
+    const u2 = u2Res.user;
+
+    const p1Res = await createPlan(
+      u1.id,
+      true,
+      {
+        origin: "BLR",
+        destination: "IXZ",
+        month: "2027-02",
+        trip: "oneway",
+        alertEnabled: true,
+        targetPrice: null,
+      },
+      NOW,
+    );
+    assert.ok(p1Res.ok);
+    const planId = p1Res.plan.id;
+
+    const { first, last } = monthBounds("2027-02");
+    const sentEmails: SendMailInput[] = [];
+    const sendMail = async (msg: SendMailInput) => {
+      sentEmails.push(msg);
+    };
+
+    // 1. Seed initial baseline = 20000 on Day 1
+    await saveFares(buildMonthFares("BLR", "IXZ", first, last, "2026-10-16", 20000));
+    const initRes = await runAlerts({
+      now: new Date("2026-10-16T06:00:00.000Z"),
+      appSecret: TEST_SECRET,
+      appOrigin: "https://trippie.example.com",
+      sendMail,
+    });
+    assert.equal(initRes.skipped["baseline set"], 1);
+    assert.equal((await listPlans(u1.id, NOW))[0]?.lastSeenPrice, 20000);
+
+    // 2. 'insufficient data' skip leaves baseline (20000) untouched
+    await client.execute({ sql: "DELETE FROM fares WHERE origin = 'BLR' AND destination = 'IXZ'", args: [] });
+    const insuffRes = await runAlerts({
+      now: new Date("2026-10-16T07:00:00.000Z"),
+      appSecret: TEST_SECRET,
+      appOrigin: "https://trippie.example.com",
+      sendMail,
+    });
+    assert.equal(insuffRes.skipped["insufficient data"], 1);
+    assert.equal((await listPlans(u1.id, NOW))[0]?.lastSeenPrice, 20000);
+
+    // Seed drop to 18000 (drop = 2000 >= 600)
+    await saveFares(buildMonthFares("BLR", "IXZ", first, last, "2026-10-16", 18000));
+
+    // 3. 'no channel' path leaves last_seen_price at 20000
+    delete process.env.SMTP_HOST;
+    delete process.env.APP_SECRET;
+    delete process.env.FCM_SERVICE_ACCOUNT;
+    const fakeServiceAccount = JSON.stringify({
+      project_id: "trippie-test",
+      client_email: "firebase-adminsdk@trippie-test.iam.gserviceaccount.com",
+      private_key: "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7\n-----END PRIVATE KEY-----\n",
+    });
+    // Push channel configured globally, but u1 has no device tokens and mail is unconfigured -> 'no channel'
+    const noChanRes = await runAlerts({
+      now: new Date("2026-10-16T08:00:00.000Z"),
+      fcmServiceAccount: fakeServiceAccount,
+      sendPush: async () => "ok",
+    });
+    assert.equal(noChanRes.skipped["no channel"], 1);
+    assert.equal((await listPlans(u1.id, NOW))[0]?.lastSeenPrice, 20000);
+
+    // 4. 'cap reached' path leaves last_seen_price at 20000
+    // Create an earlier plan for u2 that consumes maxEmails=1
+    const p2Res = await createPlan(
+      u2.id,
+      true,
+      {
+        origin: "BLR",
+        destination: "IXZ",
+        month: "2027-02",
+        trip: "oneway",
+        alertEnabled: true,
+        targetPrice: 25000,
+      },
+      new Date("2026-10-15T00:00:00.000Z"),
+    );
+    assert.ok(p2Res.ok);
+    // Ensure p2 is ordered before p1 by created_at
+    await client.execute({
+      sql: "UPDATE plans SET created_at = '2026-10-15T00:00:00.000Z' WHERE id = ?",
+      args: [p2Res.plan.id],
+    });
+    const capRes = await runAlerts({
+      now: new Date("2026-10-16T09:00:00.000Z"),
+      appSecret: TEST_SECRET,
+      appOrigin: "https://trippie.example.com",
+      maxEmails: 1,
+      sendMail,
+    });
+    assert.equal(capRes.sent, 1);
+    assert.equal(capRes.skipped["cap reached"], 1);
+    assert.equal((await listPlans(u1.id, NOW))[0]?.lastSeenPrice, 20000);
+
+    // Disable p2 so only p1 runs next
+    await updatePlan(u2.id, true, p2Res.plan.id, { alertEnabled: false }, NOW);
+
+    // 5. Later run on Day 1 re-detects the 20000 -> 18000 drop and delivers!
+    sentEmails.length = 0;
+    const deliver1 = await runAlerts({
+      now: new Date("2026-10-16T10:00:00.000Z"),
+      appSecret: TEST_SECRET,
+      appOrigin: "https://trippie.example.com",
+      sendMail,
+    });
+    assert.equal(deliver1.sent, 1);
+    assert.equal(sentEmails.length, 1);
+    assert.match(sentEmails[0]!.subject, /now from ₹18,000 \(was ₹20,000\)/);
+    assert.equal((await listPlans(u1.id, NOW))[0]?.lastSeenPrice, 18000);
+
+    // 6. 'already claimed' same UTC day when price drops further to 16000 leaves last_seen_price at 18000
+    await saveFares(buildMonthFares("BLR", "IXZ", first, last, "2026-10-16", 16000));
+    const claimedRes = await runAlerts({
+      now: new Date("2026-10-16T14:00:00.000Z"),
+      appSecret: TEST_SECRET,
+      appOrigin: "https://trippie.example.com",
+      sendMail,
+    });
+    assert.equal(claimedRes.skipped["already claimed"], 1);
+    assert.equal((await listPlans(u1.id, NOW))[0]?.lastSeenPrice, 18000);
+
+    // 7. Next UTC day (Day 2), 'delivery failed' on the 18000 -> 16000 drop leaves last_seen_price at 18000
+    await saveFares(buildMonthFares("BLR", "IXZ", first, last, "2026-10-17", 16000));
+    const failRes = await runAlerts({
+      now: new Date("2026-10-17T08:00:00.000Z"),
+      appSecret: TEST_SECRET,
+      appOrigin: "https://trippie.example.com",
+      sendMail: async () => {
+        throw new Error("SMTP outage");
+      },
+    });
+    assert.equal(failRes.failed, 1);
+    assert.equal(failRes.sent, 0);
+    assert.equal((await listPlans(u1.id, NOW))[0]?.lastSeenPrice, 18000);
+
+    // 8. Next UTC day (Day 3), SMTP recovers and the 18000 -> 16000 drop is re-detected and sent!
+    await saveFares(buildMonthFares("BLR", "IXZ", first, last, "2026-10-18", 16000));
+    sentEmails.length = 0;
+    const recoverRes = await runAlerts({
+      now: new Date("2026-10-18T08:00:00.000Z"),
+      appSecret: TEST_SECRET,
+      appOrigin: "https://trippie.example.com",
+      sendMail,
+    });
+    assert.equal(recoverRes.sent, 1);
+    assert.equal(sentEmails.length, 1);
+    assert.match(sentEmails[0]!.subject, /now from ₹16,000 \(was ₹18,000\)/);
+    assert.equal((await listPlans(u1.id, NOW))[0]?.lastSeenPrice, 16000);
+    assert.equal((await listPlans(u1.id, NOW))[0]?.id, planId);
+
+    client.close();
+  } finally {
+    if (prevUrl === undefined) delete process.env.TURSO_DATABASE_URL;
+    else process.env.TURSO_DATABASE_URL = prevUrl;
+    if (prevHost === undefined) delete process.env.SMTP_HOST;
+    else process.env.SMTP_HOST = prevHost;
+    if (prevSecret === undefined) delete process.env.APP_SECRET;
+    else process.env.APP_SECRET = prevSecret;
+    if (prevFcm === undefined) delete process.env.FCM_SERVICE_ACCOUNT;
+    else process.env.FCM_SERVICE_ACCOUNT = prevFcm;
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // Windows SQLite file handle may release asynchronously on process exit
+    }
+  }
+});
+

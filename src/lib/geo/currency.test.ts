@@ -66,8 +66,8 @@ test("formatMoney formats INR with en-IN grouping and 0 decimals, USD with 2 dec
   assert.ok(!jpyOut.includes("."), `Expected 0 decimals in ${jpyOut}`);
 });
 
-test("convertFromInr converts amounts accurately and preserves INR", () => {
-  const rates = {
+test("convertFromInr converts amounts accurately, preserves INR, and returns null when rate is missing", () => {
+  const rates: Record<string, number> = {
     INR: 1,
     USD: 0.012,
     AED: 0.044,
@@ -75,9 +75,36 @@ test("convertFromInr converts amounts accurately and preserves INR", () => {
   };
   assert.equal(convertFromInr(10000, "INR", rates), 10000);
   assert.equal(convertFromInr(10000, "INR", {}), 10000);
-  assert.ok(Math.abs(convertFromInr(10000, "USD", rates) - 120) < 1e-9);
-  assert.ok(Math.abs(convertFromInr(5000, "AED", rates) - 220) < 1e-9);
-  assert.ok(Math.abs(convertFromInr(2000, "JPY", rates) - 3600) < 1e-9);
-  // Missing currency falls back to original amount
-  assert.equal(convertFromInr(10000, "EUR", rates), 10000);
+
+  const usd = convertFromInr(10000, "USD", rates);
+  assert.notEqual(usd, null);
+  assert.ok(Math.abs(usd! - 120) < 1e-9);
+
+  const aed = convertFromInr(5000, "AED", rates);
+  assert.notEqual(aed, null);
+  assert.ok(Math.abs(aed! - 220) < 1e-9);
+
+  const jpy = convertFromInr(2000, "JPY", rates);
+  assert.notEqual(jpy, null);
+  assert.ok(Math.abs(jpy! - 3600) < 1e-9);
+
+  // Missing or non-positive rate returns null instead of raw INR amount so callers never label INR as another currency
+  assert.equal(convertFromInr(10000, "EUR", rates), null);
+  assert.equal(convertFromInr(10000, "SAR", {}), null);
+  assert.equal(convertFromInr(10000, "KWD", { KWD: 0 }), null);
+  assert.equal(convertFromInr(10000, "OMR", { OMR: -0.5 }), null);
+
+  // Caller pattern: fall back to INR formatting with INR symbol when rate is missing
+  const formatConvertedOrInr = (amountInr: number, targetCurrency: string) => {
+    const converted = convertFromInr(amountInr, targetCurrency, rates);
+    if (converted === null || targetCurrency === "INR") {
+      return formatMoney(amountInr, "INR");
+    }
+    return `≈ ${formatMoney(converted, targetCurrency)}`;
+  };
+
+  const missingOut = formatConvertedOrInr(10000, "SAR");
+  assert.ok(missingOut.includes("₹"), `Expected INR symbol in fallback output: ${missingOut}`);
+  assert.ok(!missingOut.includes("SAR"), `Must not label INR amount as SAR: ${missingOut}`);
 });
+

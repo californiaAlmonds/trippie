@@ -167,7 +167,7 @@ export async function createPlan(
     const dupRs = await tx.execute({
       sql: `SELECT id FROM plans
             WHERE user_id = ? AND origin = ? AND destination = ?
-              AND month = ? AND trip = ? AND min_gap = ? AND max_gap = ?`,
+              AND month = ? AND trip = ? AND min_gap = ? AND max_gap = ? AND cabin = ?`,
       args: [
         userId,
         parsed.origin,
@@ -176,6 +176,7 @@ export async function createPlan(
         parsed.trip,
         parsed.minGap,
         parsed.maxGap,
+        parsed.cabin,
       ],
     });
     if (dupRs.rows.length > 0) {
@@ -394,8 +395,8 @@ export async function upsertRecentSearch(
         sql: `INSERT INTO recent_searches (
                 user_id, origin, destination, month, trip, min_gap, max_gap, cabin, created_at
               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-              ON CONFLICT(user_id, origin, destination, month, trip, min_gap, max_gap)
-              DO UPDATE SET cabin = excluded.cabin, created_at = excluded.created_at`,
+              ON CONFLICT(user_id, origin, destination, month, trip, min_gap, max_gap, cabin)
+              DO UPDATE SET created_at = excluded.created_at`,
         args: [
           userId,
           parsed.origin,

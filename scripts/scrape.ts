@@ -2,12 +2,12 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { chromium, type Page } from "playwright";
 import { markRouteScraped, parseTrackBody, upsertTrackedRoute } from "../src/lib/routes/track.ts";
 import { findCheapestRowIndex, parseResults, type ParseOutcome } from "../src/lib/scrape/parse.ts";
-import { legsFor, selectRoutesToScrape } from "../src/lib/scrape/plan.ts";
+import { legsFor, selectRoutesToScrape, shouldMarkComplete } from "../src/lib/scrape/plan.ts";
 import type { SearchParams } from "../src/lib/search.ts";
 import { doneDates, finishRun, saveFares, startRun, type FareRecord } from "../src/lib/store.ts";
 import type { Cabin } from "../src/lib/types.ts";
 
-// Usage: bun scripts/scrape.ts [--route '<json>'] [--alerts-only] [--routes routes.json] [--limit N] [--debug] [--headed]
+// Usage: bun scripts/scrape.ts [--route '<json>'] [--alerts-only] [--refresh-age <hours>] [--routes routes.json] [--limit N] [--debug] [--headed]
 const args = process.argv.slice(2);
 const opt = (name: string) => {
   const i = args.indexOf(`--${name}`);
@@ -15,6 +15,11 @@ const opt = (name: string) => {
 };
 const routeJson = opt("route");
 const alertsOnly = args.includes("--alerts-only");
+const rawRefreshAge = opt("refresh-age");
+const refreshAgeHours = rawRefreshAge !== undefined ? Number(rawRefreshAge) : undefined;
+if (refreshAgeHours !== undefined && (!Number.isFinite(refreshAgeHours) || refreshAgeHours <= 0)) {
+  throw new Error("--refresh-age must be a positive number of hours");
+}
 const routesFile = opt("routes") ?? "routes.json";
 const limit = Number(opt("limit") ?? Infinity);
 const debug = args.includes("--debug");
@@ -47,7 +52,7 @@ async function scrapeDate(page: Page, origin: string, dest: string, date: string
     try {
       const li = page.locator("li").nth(bestIdx);
       const toggle = li
-        .locator('button[aria-expanded="false"], button[aria-label*="Flight details" i], [aria-expanded]')
+        .locator('button[aria-expanded="false"], [aria-expanded="false"]')
         .first();
       if ((await toggle.count()) > 0) {
         await toggle.click({ timeout: 3_000 });
@@ -69,7 +74,7 @@ async function scrapeDate(page: Page, origin: string, dest: string, date: string
       }),
     );
   }
-  const out = parseResults(page.url(), body, rows, expandedRow);
+  const out = parseResults(page.url(), body, rows, expandedRow, cabin);
   if (out.status === "parse_error") {
     mkdirSync("artifacts", { recursive: true });
     await page.screenshot({ path: `artifacts/${origin}-${dest}-${cabin}-${date}.png`, fullPage: true }).catch(() => {});
@@ -83,15 +88,7 @@ async function resolveRoutes(): Promise<SearchParams[]> {
     try {
       raw = JSON.parse(routeJson);
     } catch {
-      const repaired = routeJson.replace(
-        /([\{,]\s*)([a-zA-Z_]\w*)\s*:\s*([^,\}\s]+)/g,
-        (_m, sep: string, k: string, v: string) => `${sep}"${k}":${/^-?\d+$/.test(v) ? v : `"${v}"`}`,
-      );
-      try {
-        raw = JSON.parse(repaired);
-      } catch {
-        throw new Error("--route must be valid JSON");
-      }
+      throw new Error("--route must be valid JSON");
     }
     if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
       throw new Error("--route must be a JSON object");
@@ -120,17 +117,39 @@ async function main() {
   let ok = 0;
   let failed = 0;
   let blocked = false;
-  const scrapedInRun = new Set<string>();
+  const scrapedInRun = new Map<string, ParseOutcome["status"]>();
 
   for (const params of routes) {
+    let routePlanned = 0;
+    let routeOk = 0;
+    let routeNoFlights = 0;
+    let routeFailed = 0;
+    let routeTruncated = false;
+
     for (const leg of legsFor(params, today)) {
-      const done = await doneDates(today, leg.origin, leg.destination, leg.cabin);
-      const queue = leg.dates
-        .filter((d) => !done.has(d) && !scrapedInRun.has(`${leg.origin}|${leg.destination}|${leg.cabin}|${d}`))
-        .slice(0, limit);
-      for (const d of queue) {
-        scrapedInRun.add(`${leg.origin}|${leg.destination}|${leg.cabin}|${d}`);
+      const done = await doneDates(today, leg.origin, leg.destination, leg.cabin, { refreshAgeHours });
+      const candidates: string[] = [];
+      for (const d of leg.dates) {
+        const key = `${leg.origin}|${leg.destination}|${leg.cabin}|${d}`;
+        const prevStatus = scrapedInRun.get(key);
+        if (prevStatus !== undefined) {
+          routePlanned++;
+          if (prevStatus === "ok") routeOk++;
+          else if (prevStatus === "no_flights") routeNoFlights++;
+          else routeFailed++;
+          continue;
+        }
+        if (!done.has(d)) {
+          candidates.push(d);
+        }
       }
+
+      const queue = candidates.slice(0, limit);
+      if (queue.length < candidates.length) {
+        routeTruncated = true;
+      }
+      routePlanned += queue.length;
+
       console.log(
         `${leg.origin}->${leg.destination} (${leg.cabin}): ${queue.length} dates to scrape (${done.size} already done today)`,
       );
@@ -165,6 +184,7 @@ async function main() {
             status: out.status,
           };
           await saveFares([rec]);
+          scrapedInRun.set(`${leg.origin}|${leg.destination}|${leg.cabin}|${date}`, out.status);
           console.log(
             `  ${date} ${out.status}${
               out.status === "ok"
@@ -172,18 +192,42 @@ async function main() {
                 : ""
             }`,
           );
-          if (out.status === "ok" || out.status === "no_flights") ok++;
-          else failed++;
-          if (out.status === "blocked") blocked = true; // never retry or evade; stop the run
+          if (out.status === "ok") {
+            ok++;
+            routeOk++;
+          } else if (out.status === "no_flights") {
+            ok++;
+            routeNoFlights++;
+          } else {
+            failed++;
+            routeFailed++;
+          }
+          if (out.status === "blocked") {
+            blocked = true; // never retry or evade; stop the run
+            routeTruncated = true;
+          }
           await sleep(2_000 + Math.random() * 3_000);
         }
         await page.close();
       };
       await Promise.all(Array.from({ length: Math.min(CONCURRENCY, Math.max(queue.length, 1)) }, worker));
-      if (blocked) break;
+      if (blocked) {
+        routeTruncated = true;
+        break;
+      }
     }
     if (blocked) break;
-    await markRouteScraped(params);
+    if (
+      shouldMarkComplete({
+        planned: routePlanned,
+        ok: routeOk,
+        noFlights: routeNoFlights,
+        failed: routeFailed,
+        truncated: routeTruncated,
+      })
+    ) {
+      await markRouteScraped(params);
+    }
   }
 
   await browser.close();

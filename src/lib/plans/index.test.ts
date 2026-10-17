@@ -105,8 +105,24 @@ test("plans CRUD scoping, 20-plan cap, duplicate rejection, unverified alertEnab
     assert.equal(planA1.plan.lastSeenPrice, null);
     assert.equal(planA1.plan.expired, false);
 
-    // Duplicate plan is rejected with 409 (even with a different cabin, since UNIQUE excludes cabin)
+    // Duplicate plan in the same cabin is rejected with 409
     const dupA1 = await createPlan(userA.id, userA.verified, {
+      origin: "blr",
+      destination: "ixz",
+      month: "2027-02",
+      trip: "round",
+      minGap: 4,
+      maxGap: 7,
+      cabin: "business",
+    });
+    assert.deepEqual(dupA1, {
+      ok: false,
+      status: 409,
+      error: "Plan already saved",
+    });
+
+    // Same route/window in a different cabin (economy) succeeds and coexists
+    const econSameWindow = await createPlan(userA.id, userA.verified, {
       origin: "blr",
       destination: "ixz",
       month: "2027-02",
@@ -115,11 +131,11 @@ test("plans CRUD scoping, 20-plan cap, duplicate rejection, unverified alertEnab
       maxGap: 7,
       cabin: "economy",
     });
-    assert.deepEqual(dupA1, {
-      ok: false,
-      status: 409,
-      error: "Plan already saved",
-    });
+    assert.equal(econSameWindow.ok, true);
+    if (econSameWindow.ok) {
+      assert.equal(econSameWindow.plan.cabin, "economy");
+      assert.equal(await deletePlan(userA.id, econSameWindow.plan.id), true);
+    }
 
     // User B cannot read, patch, or delete User A's plan
     assert.deepEqual(await listPlans(userB.id), []);
@@ -267,13 +283,27 @@ test("recent searches upsert, cap-10 pruning, and clear; account deletion remove
     await clearRecentSearches(user.id);
     assert.deepEqual(await listRecentSearches(user.id), []);
 
-    // Add a plan, an alert delivery, and a recent search, then deleteUserAccount
+    // Economy and business recents for the same route/window coexist without overwriting each other
     await upsertRecentSearch(user.id, {
       origin: "BLR",
       destination: "GOI",
       month: "2027-04",
       trip: "oneway",
+      cabin: "economy",
     });
+    await upsertRecentSearch(user.id, {
+      origin: "BLR",
+      destination: "GOI",
+      month: "2027-04",
+      trip: "oneway",
+      cabin: "business",
+    });
+    const cabinRecents = await listRecentSearches(user.id);
+    assert.equal(cabinRecents.length, 2);
+    assert.deepEqual(
+      cabinRecents.map((r) => r.cabin),
+      ["business", "economy"],
+    );
     const planRes = await createPlan(user.id, user.verified, {
       origin: "BLR",
       destination: "GOI",

@@ -218,18 +218,21 @@ export function pickCurrency(input: {
   return "USD";
 }
 
-/** Converts an amount in INR into `currency` using a `rates` map (`1 INR = rates[CUR]`). */
+/**
+ * Converts an amount in INR into `currency` using a `rates` map (`1 INR = rates[CUR]`).
+ * Returns `null` when `currency` is not `'INR'` and no valid positive rate is available.
+ */
 export function convertFromInr(
   amountInr: number,
   currency: string,
   rates: Record<string, number>,
-): number {
+): number | null {
   if (!Number.isFinite(amountInr)) return 0;
   const code = typeof currency === "string" ? currency.trim().toUpperCase() : "INR";
   if (code === "INR") return amountInr;
   const rate = rates[code] ?? rates[currency];
   if (typeof rate !== "number" || !Number.isFinite(rate) || rate <= 0) {
-    return amountInr;
+    return null;
   }
   return amountInr * rate;
 }

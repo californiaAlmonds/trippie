@@ -49,11 +49,11 @@ jobs:
           if [ -n "$ROUTE" ]; then
             args+=(--route "$ROUTE")
           elif [ "$EVENT_NAME" = "schedule" ] && [ "$SCHEDULE_CRON" != "30 1 * * *" ]; then
-            args+=(--alerts-only)
+            args+=(--alerts-only --refresh-age 5)
           fi
           bun scripts/scrape.ts "${args[@]}"
       - name: Send alerts
-        if: success() && github.event_name == 'schedule'
+        if: success() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.route == ''))
         env:
           TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
           TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}

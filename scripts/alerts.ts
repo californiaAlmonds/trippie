@@ -1,4 +1,4 @@
-import { formatInr, runAlerts } from "../src/lib/alerts/engine.ts";
+import { defaultPriceFormatter, runAlerts } from "../src/lib/alerts/engine.ts";
 import { convertFromInr, formatMoney } from "../src/lib/geo/currency.ts";
 import { getRates } from "../src/lib/geo/rates.ts";
 import { getUserCurrency } from "../src/lib/prefs.ts";
@@ -8,12 +8,16 @@ import { getClient } from "../src/lib/store.ts";
 async function getFormatter(userId: string): Promise<(amountInr: number) => string> {
   try {
     const currency = await getUserCurrency(userId);
-    if (!currency || currency === "INR") return formatInr;
+    if (!currency || currency === "INR") return defaultPriceFormatter;
     const { rates } = await getRates();
-    if (!rates[currency]) return formatInr;
-    return (amountInr) => `≈ ${formatMoney(convertFromInr(amountInr, currency, rates), currency)}`;
+    if (!rates[currency]) return defaultPriceFormatter;
+    return (amountInr) => {
+      const converted = convertFromInr(amountInr, currency, rates);
+      if (converted === null) return defaultPriceFormatter(amountInr);
+      return `≈ ${formatMoney(converted, currency)}`;
+    };
   } catch {
-    return formatInr;
+    return defaultPriceFormatter;
   }
 }
 

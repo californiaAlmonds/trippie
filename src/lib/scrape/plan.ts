@@ -61,13 +61,33 @@ export function dedupeLegs(routes: SearchParams[], today: string): Leg[] {
   }));
 }
 
+export interface RouteCompletionInput {
+  planned: number;
+  ok: number;
+  noFlights: number;
+  failed: number;
+  truncated: boolean;
+}
+
+/**
+ * Pure decision function for whether a route scrape run should mark the route complete (`last_scraped_at`).
+ * True only when not truncated (e.g. by `--limit` or block) and `failed / planned <= 0.1` (10%).
+ */
+export function shouldMarkComplete(input: RouteCompletionInput): boolean {
+  if (input.truncated) return false;
+  if (input.planned < 0 || input.failed < 0) return false;
+  if (input.planned === 0) return input.failed === 0;
+  return input.failed / input.planned <= 0.1;
+}
+
 export interface SelectRoutesOptions {
   configRoutes?: Record<string, unknown>[];
   alertsOnly?: boolean;
   now?: Date;
 }
 
-function validateRouteRecord(raw: Record<string, unknown>, currentMonth: string): SearchParams | "expired" | { error: string } {
+function validateRouteRecord(raw: Record<string, unknown>, now: Date): SearchParams | "expired" | { error: string } {
+  const currentMonth = now.toISOString().slice(0, 7);
   const month = typeof raw.month === "string" ? raw.month : "";
   if (/^\d{4}-(0[1-9]|1[0-2])$/.test(month) && month < currentMonth) {
     return "expired";
@@ -76,15 +96,15 @@ function validateRouteRecord(raw: Record<string, unknown>, currentMonth: string)
   for (const [k, v] of Object.entries(raw)) {
     if (v !== undefined && v !== null) sp.set(k, String(v));
   }
-  return parseSearch(sp);
+  return parseSearch(sp, now);
 }
 
 /**
  * Selects up to 25 active routes to scrape:
  * - Syncs non-expired saved plans into tracked_routes (source='plan').
  * - Upserts non-expired configRoutes (source='config').
- * - Filters out expired months, keeps plan routes and routes requested within 14 days (or alertsOnly).
- * - Orders by most recently requested first, capped at 25.
+ * - Always includes alert-enabled plan routes first, then other saved plan and config routes,
+ *   and fills remaining slots with recent anonymous search routes ordered by last_requested_at DESC.
  */
 export async function selectRoutesToScrape(options?: SelectRoutesOptions): Promise<SearchParams[]> {
   const now = options?.now ?? new Date();
@@ -140,7 +160,7 @@ export async function selectRoutesToScrape(options?: SelectRoutesOptions): Promi
   }
 
   for (const raw of options?.configRoutes ?? []) {
-    const parsed = validateRouteRecord(raw, currentMonth);
+    const parsed = validateRouteRecord(raw, now);
     if (parsed === "expired") continue;
     if ("error" in parsed) throw new Error(`Invalid config route: ${parsed.error}`);
     await upsertTrackedRoute(parsed, "config", nowIso);
@@ -167,7 +187,31 @@ export async function selectRoutesToScrape(options?: SelectRoutesOptions): Promi
                 )
               )
             )
-          ORDER BY tr.last_requested_at DESC, tr.origin ASC, tr.destination ASC, tr.month ASC, tr.cabin ASC
+          ORDER BY
+            CASE
+              WHEN EXISTS (
+                SELECT 1 FROM plans p
+                WHERE p.alert_enabled = 1
+                  AND p.origin = tr.origin AND p.destination = tr.destination
+                  AND p.month = tr.month AND p.trip = tr.trip
+                  AND p.min_gap = tr.min_gap AND p.max_gap = tr.max_gap
+                  AND p.cabin = tr.cabin
+              ) THEN 0
+              WHEN EXISTS (
+                SELECT 1 FROM plans p
+                WHERE p.origin = tr.origin AND p.destination = tr.destination
+                  AND p.month = tr.month AND p.trip = tr.trip
+                  AND p.min_gap = tr.min_gap AND p.max_gap = tr.max_gap
+                  AND p.cabin = tr.cabin
+              ) OR (tr.source = 'plan' AND NOT EXISTS (SELECT 1 FROM plans)) THEN 1
+              WHEN tr.source = 'config' THEN 2
+              ELSE 3
+            END ASC,
+            tr.last_requested_at DESC,
+            tr.origin ASC,
+            tr.destination ASC,
+            tr.month ASC,
+            tr.cabin ASC
           LIMIT ?`,
     args: [currentMonth, cutoffIso, MAX_ROUTES_PER_RUN],
   });

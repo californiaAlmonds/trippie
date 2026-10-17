@@ -131,18 +131,59 @@ export async function saveFares(records: FareRecord[], provider = "google-flight
   );
 }
 
-/** Travel dates already scraped today, so a re-run resumes instead of repeating. */
+export interface DoneDatesOptions {
+  refreshAgeHours?: number;
+  now?: Date | number;
+  minScrapedAt?: string;
+}
+
+/**
+ * Travel dates already scraped today, so a re-run resumes instead of repeating.
+ * When `refreshAgeHours` (or `minScrapedAt`) is provided, only dates whose scrape is newer than
+ * the cutoff are considered done, allowing older scrapes from earlier the same UTC day to be refreshed.
+ */
 export async function doneDates(
   day: string,
   origin: string,
   destination: string,
   cabin: Cabin = "economy",
+  options?: DoneDatesOptions | number | string,
 ): Promise<Set<string>> {
-  const rs = await (await db()).execute({
-    sql: `SELECT travel_date FROM fares
-          WHERE snapshot_day = ? AND origin = ? AND destination = ? AND cabin = ? AND status IN ('ok','no_flights')`,
-    args: [day, origin, destination, cabin],
-  });
+  let minScrapedAt: string | undefined;
+  if (typeof options === "string") {
+    minScrapedAt = options;
+  } else if (typeof options === "number" && Number.isFinite(options) && options > 0) {
+    minScrapedAt = new Date(Date.now() - options * 3_600_000).toISOString();
+  } else if (options && typeof options === "object") {
+    if (options.minScrapedAt) {
+      minScrapedAt = options.minScrapedAt;
+    } else if (
+      typeof options.refreshAgeHours === "number" &&
+      Number.isFinite(options.refreshAgeHours) &&
+      options.refreshAgeHours > 0
+    ) {
+      const nowMs =
+        options.now instanceof Date
+          ? options.now.getTime()
+          : typeof options.now === "number"
+            ? options.now
+            : Date.now();
+      minScrapedAt = new Date(nowMs - options.refreshAgeHours * 3_600_000).toISOString();
+    }
+  }
+
+  const rs = minScrapedAt
+    ? await (await db()).execute({
+        sql: `SELECT travel_date FROM fares
+              WHERE snapshot_day = ? AND origin = ? AND destination = ? AND cabin = ?
+                AND status IN ('ok','no_flights') AND scraped_at >= ?`,
+        args: [day, origin, destination, cabin, minScrapedAt],
+      })
+    : await (await db()).execute({
+        sql: `SELECT travel_date FROM fares
+              WHERE snapshot_day = ? AND origin = ? AND destination = ? AND cabin = ? AND status IN ('ok','no_flights')`,
+        args: [day, origin, destination, cabin],
+      });
   return new Set(rs.rows.map((r) => String(r.travel_date)));
 }
 
@@ -325,6 +366,29 @@ export async function getRouteStats(
     sql: `SELECT snapshot_day AS day, price FROM fares
           WHERE origin = ? AND destination = ? AND cabin = ? AND travel_date BETWEEN ? AND ?
             AND status = 'ok' AND price IS NOT NULL`,
+    args: [origin, destination, cabin, from, to],
+  });
+  return computePriceStats(rs.rows.map((r) => ({ day: String(r.day), price: Number(r.price) })));
+}
+
+/** Price distribution across per-day current (latest snapshot) status='ok' fares in [from, to] for a route+cabin. */
+export async function getOneWayStats(
+  origin: string,
+  destination: string,
+  from: string,
+  to: string,
+  cabin: Cabin = "economy",
+): Promise<PriceStats | null> {
+  const rs = await (await db()).execute({
+    sql: `SELECT f.snapshot_day AS day, f.price
+          FROM fares f
+          WHERE f.origin = ? AND f.destination = ? AND f.cabin = ? AND f.travel_date BETWEEN ? AND ?
+            AND f.status = 'ok' AND f.price IS NOT NULL
+            AND f.snapshot_day = (SELECT MAX(snapshot_day) FROM fares
+                                  WHERE origin = f.origin AND destination = f.destination
+                                    AND travel_date = f.travel_date AND cabin = f.cabin
+                                    AND status = 'ok' AND price IS NOT NULL)
+          ORDER BY f.travel_date`,
     args: [origin, destination, cabin, from, to],
   });
   return computePriceStats(rs.rows.map((r) => ({ day: String(r.day), price: Number(r.price) })));

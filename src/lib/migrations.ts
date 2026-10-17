@@ -184,6 +184,83 @@ export const MIGRATIONS: readonly Migration[] = [
       `ALTER TABLE plans ADD COLUMN last_seen_price INTEGER`,
     ],
   },
+  {
+    // Include cabin in plans UNIQUE constraint and recent_searches PRIMARY KEY.
+    // Rebuild alert_deliveries around plans so PRAGMA foreign_keys = ON stays satisfied.
+    id: 8,
+    statements: [
+      `CREATE TABLE alert_deliveries_backup (
+        plan_id TEXT NOT NULL,
+        day TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('claimed','sent','failed')),
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(plan_id, day)
+      )`,
+      `INSERT INTO alert_deliveries_backup (plan_id, day, status, created_at)
+       SELECT plan_id, day, status, created_at FROM alert_deliveries`,
+      `DROP TABLE alert_deliveries`,
+      `CREATE TABLE plans_v2 (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id),
+        origin TEXT NOT NULL,
+        destination TEXT NOT NULL,
+        month TEXT NOT NULL,
+        trip TEXT NOT NULL CHECK (trip IN ('round','oneway')),
+        min_gap INTEGER NOT NULL,
+        max_gap INTEGER NOT NULL,
+        cabin TEXT NOT NULL DEFAULT 'economy' CHECK (cabin IN ('economy','business')),
+        alert_enabled INTEGER NOT NULL DEFAULT 0,
+        target_price INTEGER,
+        last_alert_price INTEGER,
+        last_seen_price INTEGER,
+        last_alert_at TEXT,
+        revision INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        UNIQUE(user_id, origin, destination, month, trip, min_gap, max_gap, cabin)
+      )`,
+      `INSERT INTO plans_v2 (
+        id, user_id, origin, destination, month, trip, min_gap, max_gap, cabin,
+        alert_enabled, target_price, last_alert_price, last_seen_price, last_alert_at, revision, created_at
+      )
+      SELECT
+        id, user_id, origin, destination, month, trip, min_gap, max_gap, cabin,
+        alert_enabled, target_price, last_alert_price, last_seen_price, last_alert_at, revision, created_at
+      FROM plans`,
+      `DROP TABLE plans`,
+      `ALTER TABLE plans_v2 RENAME TO plans`,
+      `CREATE INDEX IF NOT EXISTS idx_plans_user_id ON plans(user_id)`,
+      `CREATE TABLE alert_deliveries (
+        plan_id TEXT NOT NULL REFERENCES plans(id),
+        day TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('claimed','sent','failed')),
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(plan_id, day)
+      )`,
+      `INSERT INTO alert_deliveries (plan_id, day, status, created_at)
+       SELECT plan_id, day, status, created_at FROM alert_deliveries_backup`,
+      `DROP TABLE alert_deliveries_backup`,
+      `CREATE TABLE recent_searches_v2 (
+        user_id TEXT NOT NULL REFERENCES users(id),
+        origin TEXT NOT NULL,
+        destination TEXT NOT NULL,
+        month TEXT NOT NULL,
+        trip TEXT NOT NULL CHECK (trip IN ('round','oneway')),
+        min_gap INTEGER NOT NULL,
+        max_gap INTEGER NOT NULL,
+        cabin TEXT NOT NULL DEFAULT 'economy' CHECK (cabin IN ('economy','business')),
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(user_id, origin, destination, month, trip, min_gap, max_gap, cabin)
+      )`,
+      `INSERT INTO recent_searches_v2 (
+        user_id, origin, destination, month, trip, min_gap, max_gap, cabin, created_at
+      )
+      SELECT
+        user_id, origin, destination, month, trip, min_gap, max_gap, cabin, created_at
+      FROM recent_searches`,
+      `DROP TABLE recent_searches`,
+      `ALTER TABLE recent_searches_v2 RENAME TO recent_searches`,
+    ],
+  },
 ];
 
 const SQLITE_BUSY_RE = /SQLITE_BUSY|database is locked/i;
