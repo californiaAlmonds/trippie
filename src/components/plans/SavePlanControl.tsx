@@ -260,14 +260,14 @@ export default function SavePlanControl({ query }: SavePlanControlProps) {
                 <div className="flex items-center gap-2 min-w-0">
                   <BellIcon className="h-4 w-4 shrink-0 text-[var(--accent)]" />
                   <span className="text-xs font-semibold text-[var(--text-primary)]">
-                    Email me when the price drops
+                    Alert me when the price drops
                   </span>
                 </div>
                 <button
                   type="button"
                   role="switch"
                   aria-checked={effectiveAlertEnabled}
-                  aria-label="Email me when the price drops"
+                  aria-label="Alert me when the price drops"
                   aria-describedby={!user.verified ? unverifiedHintId : undefined}
                   disabled={!user.verified}
                   onClick={() => setAlertPref(!effectiveAlertEnabled)}
@@ -286,6 +286,10 @@ export default function SavePlanControl({ query }: SavePlanControlProps) {
                   />
                 </button>
               </div>
+
+              <p className="mt-1 text-[11px] text-[var(--text-secondary)]">
+                By email, and on your phone if notifications are on
+              </p>
 
               {!user.verified && (
                 <p

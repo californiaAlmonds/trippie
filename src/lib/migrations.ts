@@ -112,6 +112,19 @@ export const MIGRATIONS: readonly Migration[] = [
       `ALTER TABLE plans ADD COLUMN revision INTEGER NOT NULL DEFAULT 0`,
     ],
   },
+  {
+    id: 5,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS devices (
+        token TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id),
+        platform TEXT NOT NULL CHECK (platform IN ('android')),
+        created_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_devices_user_id ON devices(user_id)`,
+    ],
+  },
 ];
 
 const SQLITE_BUSY_RE = /SQLITE_BUSY|database is locked/i;

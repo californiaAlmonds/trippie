@@ -127,11 +127,16 @@ function PlanCard({ plan }: { plan: Plan }) {
       {/* Alert toggle + target price */}
       <div className="grid gap-2 rounded-xl border border-[var(--glass-border-subtle)] bg-white/20 dark:bg-white/[0.02] p-3">
         <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2 min-w-0">
-            <BellIcon className="h-4 w-4 shrink-0 text-[var(--accent)]" />
-            <span className="text-xs font-medium text-[var(--text-primary)]">
-              Price drop email alert
-            </span>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 min-w-0">
+              <BellIcon className="h-4 w-4 shrink-0 text-[var(--accent)]" />
+              <span className="text-xs font-medium text-[var(--text-primary)]">
+                Alert me when the price drops
+              </span>
+            </div>
+            <p className="mt-0.5 text-[11px] text-[var(--text-secondary)]">
+              By email, and on your phone if notifications are on
+            </p>
           </div>
 
           <button

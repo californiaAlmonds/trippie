@@ -43,6 +43,7 @@ jobs:
           SMTP_FROM: ${{ secrets.SMTP_FROM }}
           APP_ORIGIN: ${{ secrets.APP_ORIGIN }}
           APP_SECRET: ${{ secrets.APP_SECRET }}
+          FCM_SERVICE_ACCOUNT: ${{ secrets.FCM_SERVICE_ACCOUNT }}
         run: bun scripts/alerts.ts
       - name: Upload screenshots of failed pages
         if: always()

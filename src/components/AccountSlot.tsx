@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useAccount } from "./account/AccountProvider";
 import DeleteAccountDialog from "./account/DeleteAccountDialog";
-import { BookmarkIcon, LogOutIcon, TrashIcon, UserIcon } from "./icons";
+import { BellIcon, BookmarkIcon, LogOutIcon, TrashIcon, UserIcon } from "./icons";
 
 export default function AccountSlot() {
   const {
@@ -14,6 +14,9 @@ export default function AccountSlot() {
     openPlans,
     signOut,
     plans,
+    isNative,
+    pushStatus,
+    requestPushPermission,
   } = useAccount();
 
   const [menuOpen, setMenuOpen] = useState(false);
@@ -73,6 +76,8 @@ export default function AccountSlot() {
   }
 
   const initial = (user.email.trim()[0] ?? "U").toUpperCase();
+  const pushStatusLabel =
+    pushStatus === "on" ? "On" : pushStatus === "blocked" ? "Blocked" : "Off";
 
   return (
     <div ref={containerRef} className="relative">
@@ -134,6 +139,46 @@ export default function AccountSlot() {
                 </span>
               )}
             </button>
+
+            {isNative && (
+              <div className="grid gap-1">
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={async () => {
+                    if (pushStatus === "off") {
+                      await requestPushPermission();
+                    }
+                  }}
+                  className={`focus-ring flex w-full items-center justify-between gap-2 rounded-xl px-3 py-2 text-left text-xs sm:text-sm font-medium text-[var(--text-primary)] ${
+                    pushStatus === "off"
+                      ? "hover:bg-[var(--glass-bg-subtle-hover)] cursor-pointer"
+                      : "cursor-default"
+                  }`}
+                >
+                  <span className="inline-flex items-center gap-2">
+                    <BellIcon className="h-4 w-4 text-[var(--accent)]" />
+                    <span>Phone notifications</span>
+                  </span>
+                  <span
+                    className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                      pushStatus === "on"
+                        ? "bg-[var(--badge-lowest-bg)] text-[var(--badge-lowest-text)]"
+                        : pushStatus === "blocked"
+                          ? "bg-[var(--delta-amber-bg)] text-[var(--delta-amber-text)]"
+                          : "bg-slate-500/15 text-[var(--text-secondary)]"
+                    }`}
+                  >
+                    {pushStatusLabel}
+                  </span>
+                </button>
+                {pushStatus === "blocked" && (
+                  <p className="px-3 pb-1 text-[11px] leading-snug text-[var(--text-muted)]">
+                    Permission denied. To enable, open Android Settings → Apps → Trippie → Notifications.
+                  </p>
+                )}
+              </div>
+            )}
 
             <button
               type="button"

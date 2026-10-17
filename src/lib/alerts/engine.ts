@@ -2,6 +2,14 @@ import { emailBaseOrigin } from "../auth/tokens.ts";
 import { orderedSites } from "../links.ts";
 import { escapeHtml, mailConfigured, type SendMailInput, sendMail } from "../mailer.ts";
 import { isMonthExpired } from "../plans/index.ts";
+import { deleteDeviceToken, listUserDeviceTokens } from "../push/devices.ts";
+import {
+  type PushMessageInput,
+  parseServiceAccount,
+  pushConfigured,
+  type SendPushResult,
+  sendPush,
+} from "../push/fcm.ts";
 import type { TripMode } from "../search.ts";
 import { getClient, getFreshFares } from "../store.ts";
 import type { DayFare, TripWindow } from "../types.ts";
@@ -37,8 +45,10 @@ export interface AlertRunHooks {
 export interface AlertRunOptions {
   now?: Date;
   sendMail?: (input: SendMailInput) => Promise<void>;
+  sendPush?: (token: string, payload: PushMessageInput) => Promise<SendPushResult>;
   appSecret?: string;
   appOrigin?: string;
+  fcmServiceAccount?: string;
   maxEmails?: number;
   dryRun?: boolean;
   hooks?: AlertRunHooks;
@@ -50,6 +60,9 @@ export interface AlertRunSummary {
   wouldAlert: number;
   sent: number;
   failed: number;
+  email_sent: number;
+  push_sent: number;
+  invalid_tokens_removed: number;
   skipped: Record<string, number>;
 }
 
@@ -187,8 +200,53 @@ export function buildAlertEmail(
 }
 
 /**
+ * Builds the push notification payload (title, body, deep-link url, and plan tag).
+ * When `APP_ORIGIN` is unset, `url` falls back to a `/` relative path (`/?origin=...`).
+ */
+export function buildAlertPush(
+  plan: AlertPlanRow,
+  best: AlertBestOptions,
+  options?: { appOrigin?: string },
+): PushMessageInput {
+  const monthLabel = formatMonthYear(plan.month);
+  const bestFormatted = formatInr(best.bestPrice);
+  const title = `${plan.origin} → ${plan.destination} from ₹${bestFormatted}`;
+
+  let body: string;
+  if (best.trip === "round") {
+    const w = best.windows[0]!;
+    body = `${monthLabel} · best ${w.depart.date} – ${w.ret.date}`;
+  } else {
+    const d = best.days[0]!;
+    body = `${monthLabel} · best ${d.date}`;
+  }
+
+  const rawOrigin = options?.appOrigin !== undefined ? options.appOrigin : process.env.APP_ORIGIN;
+  const trimmedOrigin = (rawOrigin ?? "").trim().replace(/\/+$/, "");
+
+  const qs = new URLSearchParams({
+    origin: plan.origin,
+    destination: plan.destination,
+    month: plan.month,
+    trip: plan.trip,
+    minGap: String(plan.minGap),
+    maxGap: String(plan.maxGap),
+  });
+
+  const url = `${trimmedOrigin}/?${qs.toString()}`;
+
+  return {
+    title,
+    body,
+    url,
+    tag: plan.id,
+  };
+}
+
+/**
  * Evaluates all active alert plans against fresh fares (snapshot_day >= today - 1 UTC)
- * and sends at most 200 alert emails per run with at-most-once daily ledger claiming.
+ * and delivers across available channels (email and/or push) for at most 200 plans per run
+ * with at-most-once daily ledger claiming.
  */
 export async function runAlerts(options?: AlertRunOptions): Promise<AlertRunSummary> {
   const now = options?.now ?? new Date();
@@ -199,11 +257,23 @@ export async function runAlerts(options?: AlertRunOptions): Promise<AlertRunSumm
   const appSecret = options?.appSecret ?? process.env.APP_SECRET;
   const appOrigin = options?.appOrigin ?? process.env.APP_ORIGIN;
   const maxEmails = options?.maxEmails ?? MAX_ALERTS_PER_RUN;
-  const hasCustomSender = typeof options?.sendMail === "function";
+  const hasCustomMailSender = typeof options?.sendMail === "function";
+  const hasCustomPushSender = typeof options?.sendPush === "function";
   const sendMailFn = options?.sendMail ?? sendMail;
+  const sendPushFn =
+    options?.sendPush ??
+    ((token: string, payload: PushMessageInput) =>
+      sendPush(token, payload, { serviceAccountJson: options?.fcmServiceAccount }));
 
-  const dryRun =
-    options?.dryRun ?? (!appSecretConfigured(appSecret) || (!hasCustomSender && !mailConfigured()));
+  const emailChannelAvailable =
+    appSecretConfigured(appSecret) && (hasCustomMailSender || mailConfigured());
+  const pushChannelAvailable =
+    hasCustomPushSender ||
+    (options?.fcmServiceAccount !== undefined
+      ? parseServiceAccount(options.fcmServiceAccount) !== null
+      : pushConfigured());
+
+  const dryRun = options?.dryRun ?? (!emailChannelAvailable && !pushChannelAvailable);
 
   const skipped: Record<string, number> = {};
   const skip = (reason: string) => {
@@ -227,6 +297,9 @@ export async function runAlerts(options?: AlertRunOptions): Promise<AlertRunSumm
   let wouldAlert = 0;
   let sent = 0;
   let failed = 0;
+  let email_sent = 0;
+  let push_sent = 0;
+  let invalid_tokens_removed = 0;
 
   for (const row of rs.rows) {
     considered++;
@@ -314,6 +387,15 @@ export async function runAlerts(options?: AlertRunOptions): Promise<AlertRunSumm
       continue;
     }
 
+    const canEmail = emailChannelAvailable;
+    const deviceTokens = pushChannelAvailable ? await listUserDeviceTokens(plan.userId) : [];
+    const canPush = pushChannelAvailable && deviceTokens.length > 0;
+
+    if (!canEmail && !canPush) {
+      skip("no channel");
+      continue;
+    }
+
     if (sent >= maxEmails) {
       skip("cap reached");
       continue;
@@ -345,10 +427,38 @@ export async function runAlerts(options?: AlertRunOptions): Promise<AlertRunSumm
 
     wouldAlert++;
 
-    try {
-      const emailPayload = buildAlertEmail(plan, best, { appOrigin, appSecret });
-      await sendMailFn(emailPayload);
-    } catch {
+    let delivered = false;
+
+    if (canEmail) {
+      try {
+        const emailPayload = buildAlertEmail(plan, best, { appOrigin, appSecret });
+        await sendMailFn(emailPayload);
+        email_sent++;
+        delivered = true;
+      } catch {
+        // Email failed; push channel may still deliver
+      }
+    }
+
+    if (canPush) {
+      const pushPayload = buildAlertPush(plan, best, { appOrigin });
+      for (const token of deviceTokens) {
+        try {
+          const pushRes = await sendPushFn(token, pushPayload);
+          if (pushRes === "ok") {
+            push_sent++;
+            delivered = true;
+          } else if (pushRes === "invalid_token") {
+            await withBusyRetry(() => deleteDeviceToken(token));
+            invalid_tokens_removed++;
+          }
+        } catch {
+          // Treat unexpected throw as 'error'
+        }
+      }
+    }
+
+    if (!delivered) {
       failed++;
       await withBusyRetry(() =>
         client.execute({
@@ -385,6 +495,9 @@ export async function runAlerts(options?: AlertRunOptions): Promise<AlertRunSumm
     wouldAlert,
     sent,
     failed,
+    email_sent,
+    push_sent,
+    invalid_tokens_removed,
     skipped,
   };
 }

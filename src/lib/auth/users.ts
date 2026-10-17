@@ -182,7 +182,7 @@ export async function resetUserPassword(userId: string, newPasswordHash: string)
 
 /**
  * Deletes the user's child rows and user record in ONE write transaction in explicit dependency order:
- * alert_deliveries -> plans -> recent_searches -> email_tokens -> sessions -> users.
+ * alert_deliveries -> plans -> recent_searches -> devices -> email_tokens -> sessions -> users.
  */
 export async function deleteUserAccount(userId: string): Promise<void> {
   const client = await getClient();
@@ -198,6 +198,10 @@ export async function deleteUserAccount(userId: string): Promise<void> {
       },
       {
         sql: "DELETE FROM recent_searches WHERE user_id = ?",
+        args: [userId],
+      },
+      {
+        sql: "DELETE FROM devices WHERE user_id = ?",
         args: [userId],
       },
       {
