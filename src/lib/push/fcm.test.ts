@@ -186,7 +186,7 @@ test("sendPush signs RS256 JWT with expected claims, caches OAuth token until 5m
   assert.equal(capturedFcmAuth, "Bearer ya29.test_access_token_2");
 });
 
-test("sendPush classifies 404, UNREGISTERED, and token INVALID_ARGUMENT as invalid_token and other failures as error", async () => {
+test("sendPush classifies 404, FcmError UNREGISTERED, and FcmError INVALID_ARGUMENT with message.token fieldViolation as invalid_token, and ambiguous INVALID_ARGUMENT or other failures as error", async () => {
   clearAccessTokenCache();
   let fcmResponseFactory: () => Response = () => Response.json({}, { status: 200 });
 
@@ -197,7 +197,7 @@ test("sendPush classifies 404, UNREGISTERED, and token INVALID_ARGUMENT as inval
     return fcmResponseFactory();
   };
 
-  // HTTP 404 -> invalid_token
+  // HTTP 404 -> invalid_token (even without details)
   fcmResponseFactory = () =>
     Response.json(
       {
@@ -205,12 +205,6 @@ test("sendPush classifies 404, UNREGISTERED, and token INVALID_ARGUMENT as inval
           code: 404,
           message: "Requested entity was not found.",
           status: "NOT_FOUND",
-          details: [
-            {
-              "@type": "type.googleapis.com/google.firebase.fcm.v1.FcmError",
-              errorCode: "UNREGISTERED",
-            },
-          ],
         },
       },
       { status: 404 },
@@ -224,7 +218,34 @@ test("sendPush classifies 404, UNREGISTERED, and token INVALID_ARGUMENT as inval
     "invalid_token",
   );
 
-  // HTTP 400 with INVALID_ARGUMENT about token -> invalid_token
+  // FcmError UNREGISTERED -> invalid_token
+  fcmResponseFactory = () =>
+    Response.json(
+      {
+        error: {
+          code: 400,
+          message: "App instance has been unregistered.",
+          status: "INVALID_ARGUMENT",
+          details: [
+            {
+              "@type": "type.googleapis.com/google.firebase.fcm.v1.FcmError",
+              errorCode: "UNREGISTERED",
+            },
+          ],
+        },
+      },
+      { status: 400 },
+    );
+  assert.equal(
+    await sendPush(
+      "tok_unreg2_12345678901234",
+      { title: "T", body: "B", url: "/", tag: "p1" },
+      { fetch: fakeFetch, serviceAccountJson: TEST_SERVICE_ACCOUNT },
+    ),
+    "invalid_token",
+  );
+
+  // HTTP 400 with FcmError INVALID_ARGUMENT + BadRequest fieldViolation for message.token -> invalid_token
   fcmResponseFactory = () =>
     Response.json(
       {
@@ -232,6 +253,21 @@ test("sendPush classifies 404, UNREGISTERED, and token INVALID_ARGUMENT as inval
           code: 400,
           message: "The registration token is not a valid FCM registration token",
           status: "INVALID_ARGUMENT",
+          details: [
+            {
+              "@type": "type.googleapis.com/google.firebase.fcm.v1.FcmError",
+              errorCode: "INVALID_ARGUMENT",
+            },
+            {
+              "@type": "type.googleapis.com/google.rpc.BadRequest",
+              fieldViolations: [
+                {
+                  field: "message.token",
+                  description: "Invalid registration token",
+                },
+              ],
+            },
+          ],
         },
       },
       { status: 400 },
@@ -244,6 +280,62 @@ test("sendPush classifies 404, UNREGISTERED, and token INVALID_ARGUMENT as inval
     ),
     "invalid_token",
   );
+
+  // INVALID_ARGUMENT without token-specific evidence (e.g. empty message, no details, or non-token fieldViolation) -> error
+  for (const body of [
+    {
+      error: {
+        code: 400,
+        message: "",
+        status: "INVALID_ARGUMENT",
+      },
+    },
+    {
+      error: {
+        code: 400,
+        message: "Invalid payload",
+        status: "INVALID_ARGUMENT",
+        details: [
+          {
+            "@type": "type.googleapis.com/google.firebase.fcm.v1.FcmError",
+            errorCode: "INVALID_ARGUMENT",
+          },
+        ],
+      },
+    },
+    {
+      error: {
+        code: 400,
+        message: "Invalid TTL format",
+        status: "INVALID_ARGUMENT",
+        details: [
+          {
+            "@type": "type.googleapis.com/google.firebase.fcm.v1.FcmError",
+            errorCode: "INVALID_ARGUMENT",
+          },
+          {
+            "@type": "type.googleapis.com/google.rpc.BadRequest",
+            fieldViolations: [
+              {
+                field: "message.android.ttl",
+                description: "Invalid value",
+              },
+            ],
+          },
+        ],
+      },
+    },
+  ]) {
+    fcmResponseFactory = () => Response.json(body, { status: 400 });
+    assert.equal(
+      await sendPush(
+        "tok_valid_123456789012345",
+        { title: "T", body: "B", url: "/", tag: "p1" },
+        { fetch: fakeFetch, serviceAccountJson: TEST_SERVICE_ACCOUNT },
+      ),
+      "error",
+    );
+  }
 
   // HTTP 500 / INTERNAL -> error
   fcmResponseFactory = () =>
@@ -286,4 +378,72 @@ test("sendPush classifies 404, UNREGISTERED, and token INVALID_ARGUMENT as inval
     ),
     "error",
   );
+});
+
+test("sendPush aborts a response whose body never finishes within the timeout and returns error", async () => {
+  clearAccessTokenCache();
+
+  // 1. Stalled OAuth token response body
+  let oauthSignalAborted = false;
+  const stalledOAuthFetch: typeof globalThis.fetch = async (_input, init) => {
+    init?.signal?.addEventListener("abort", () => {
+      oauthSignalAborted = true;
+    });
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"access_token":'));
+        // Never closes
+      },
+    });
+    return new Response(stream, {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+
+  const oauthRes = await sendPush(
+    "tok_stalled_oauth_123456789",
+    { title: "T", body: "B", url: "/", tag: "p1" },
+    {
+      fetch: stalledOAuthFetch,
+      serviceAccountJson: TEST_SERVICE_ACCOUNT,
+      timeoutMs: 30,
+    },
+  );
+  assert.equal(oauthRes, "error");
+  assert.equal(oauthSignalAborted, true);
+
+  // 2. Stalled FCM send response body (headers resolve 200 immediately, body never finishes)
+  clearAccessTokenCache();
+  let fcmSignalAborted = false;
+  const stalledFcmFetch: typeof globalThis.fetch = async (input, init) => {
+    if (String(input) === OAUTH_TOKEN_URL) {
+      return Response.json({ access_token: "ya29.ok", expires_in: 3600 }, { status: 200 });
+    }
+    init?.signal?.addEventListener("abort", () => {
+      fcmSignalAborted = true;
+    });
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"name":'));
+        // Never closes
+      },
+    });
+    return new Response(stream, {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+
+  const fcmRes = await sendPush(
+    "tok_stalled_fcm_12345678901",
+    { title: "T", body: "B", url: "/", tag: "p1" },
+    {
+      fetch: stalledFcmFetch,
+      serviceAccountJson: TEST_SERVICE_ACCOUNT,
+      timeoutMs: 30,
+    },
+  );
+  assert.equal(fcmRes, "error");
+  assert.equal(fcmSignalAborted, true);
 });

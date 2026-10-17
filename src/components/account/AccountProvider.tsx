@@ -239,26 +239,31 @@ export function AccountProvider({
   );
 
   const signOut = useCallback(async () => {
+    let savedToken: string | null = null;
     try {
-      const savedToken =
+      savedToken =
         typeof window !== "undefined"
           ? window.localStorage.getItem(PUSH_TOKEN_KEY)
           : null;
-      if (savedToken) {
-        await api("/api/devices", {
-          method: "DELETE",
-          body: { token: savedToken },
-        });
-        window.localStorage.removeItem(PUSH_TOKEN_KEY);
-      }
     } catch {
-      // Ignore storage or network failure during sign-out cleanup
+      // Ignore storage errors
     }
-    await api("/api/auth/logout", { method: "POST" });
-    setUser(null);
-    setStatus("guest");
-    setPlans([]);
-    setPlansOpen(false);
+
+    const res = await api("/api/auth/logout", {
+      method: "POST",
+      body: savedToken ? { deviceToken: savedToken } : {},
+    });
+    if (res.ok) {
+      try {
+        window.localStorage.removeItem(PUSH_TOKEN_KEY);
+      } catch {
+        // Ignore storage errors
+      }
+      setUser(null);
+      setStatus("guest");
+      setPlans([]);
+      setPlansOpen(false);
+    }
   }, []);
 
   const deleteAccount = useCallback(

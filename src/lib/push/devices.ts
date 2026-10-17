@@ -1,3 +1,4 @@
+import { hashSessionToken } from "../auth/session-core.ts";
 import { getClient } from "../store.ts";
 
 export const DEVICE_TOKEN_RE = /^[A-Za-z0-9:_\-.]{20,4096}$/;
@@ -88,6 +89,64 @@ export async function unregisterDevice(userId: string, token: string): Promise<v
     sql: "DELETE FROM devices WHERE token = ? AND user_id = ?",
     args: [token, userId],
   });
+}
+
+/**
+ * Removes `deviceToken` during logout only if `userId` (or an active `sessionToken`) is present
+ * and `deviceToken` is valid and belongs to that user. When `sessionToken` is provided, also
+ * deletes the session row in the same write operation. Invalid or omitted `deviceToken` is ignored.
+ */
+export async function unregisterDeviceOnLogout(
+  userId: string | null | undefined,
+  deviceToken?: unknown,
+  sessionToken?: string | null,
+): Promise<void> {
+  const validDeviceToken = isValidDeviceToken(deviceToken) ? deviceToken : null;
+  const validSessionToken =
+    typeof sessionToken === "string" && sessionToken.length > 0 && sessionToken.length <= 256
+      ? sessionToken
+      : null;
+
+  if (validSessionToken) {
+    const tokenHash = hashSessionToken(validSessionToken);
+    const nowIso = new Date().toISOString();
+    const client = await getClient();
+    if (validDeviceToken) {
+      await client.batch(
+        [
+          userId
+            ? {
+                sql: "DELETE FROM devices WHERE token = ? AND user_id = ?",
+                args: [validDeviceToken, userId],
+              }
+            : {
+                sql: `DELETE FROM devices
+                      WHERE token = ?
+                        AND user_id = (
+                          SELECT user_id FROM sessions
+                          WHERE token_hash = ? AND expires_at > ?
+                        )`,
+                args: [validDeviceToken, tokenHash, nowIso],
+              },
+          {
+            sql: "DELETE FROM sessions WHERE token_hash = ?",
+            args: [tokenHash],
+          },
+        ],
+        "write",
+      );
+    } else {
+      await client.execute({
+        sql: "DELETE FROM sessions WHERE token_hash = ?",
+        args: [tokenHash],
+      });
+    }
+    return;
+  }
+
+  if (userId && validDeviceToken) {
+    await unregisterDevice(userId, validDeviceToken);
+  }
 }
 
 /**

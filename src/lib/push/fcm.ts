@@ -26,6 +26,7 @@ export interface SendPushOptions {
   clock?: () => number;
   now?: () => number;
   serviceAccountJson?: string;
+  timeoutMs?: number;
 }
 
 interface CachedAccessToken {
@@ -111,16 +112,33 @@ async function fetchWithTimeout(
   url: string,
   init: RequestInit,
   timeoutMs = REQUEST_TIMEOUT_MS,
-): Promise<Response> {
+): Promise<{ status: number; ok: boolean; text: string }> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new DOMException("The operation was aborted", "AbortError"));
+    }, timeoutMs);
+  });
+
   try {
-    return await fetchFn(url, {
-      ...init,
-      signal: controller.signal,
-    });
+    return await Promise.race([
+      (async () => {
+        const res = await fetchFn(url, {
+          ...init,
+          signal: controller.signal,
+        });
+        const text = await res.text();
+        return { status: res.status, ok: res.ok, text };
+      })(),
+      timeoutPromise,
+    ]);
   } finally {
-    clearTimeout(timer);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
   }
 }
 
@@ -128,6 +146,7 @@ async function getAccessToken(
   account: ServiceAccountConfig,
   fetchFn: typeof globalThis.fetch,
   nowMs: number,
+  timeoutMs = REQUEST_TIMEOUT_MS,
 ): Promise<string> {
   const cacheKey = `${account.project_id}:${account.client_email}`;
   if (
@@ -144,19 +163,24 @@ async function getAccessToken(
     assertion,
   }).toString();
 
-  const res = await fetchWithTimeout(fetchFn, OAUTH_TOKEN_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
+  const res = await fetchWithTimeout(
+    fetchFn,
+    OAUTH_TOKEN_URL,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body,
     },
-    body,
-  });
+    timeoutMs,
+  );
 
   if (!res.ok) {
     throw new Error(`OAuth token exchange failed with status ${res.status}`);
   }
 
-  const data = (await res.json()) as { access_token?: unknown; expires_in?: unknown };
+  const data = JSON.parse(res.text) as { access_token?: unknown; expires_in?: unknown };
   if (typeof data?.access_token !== "string" || !data.access_token) {
     throw new Error("OAuth response missing access_token");
   }
@@ -175,36 +199,64 @@ async function getAccessToken(
   return data.access_token;
 }
 
+const FCM_ERROR_TYPE = "type.googleapis.com/google.firebase.fcm.v1.FcmError";
+const BAD_REQUEST_TYPE = "type.googleapis.com/google.rpc.BadRequest";
+
 function classifyFcmError(status: number, body: unknown): SendPushResult {
   if (status === 404) {
     return "invalid_token";
   }
 
-  if (typeof body === "object" && body !== null && "error" in body) {
-    const errObj = (body as { error?: unknown }).error;
-    if (typeof errObj === "object" && errObj !== null) {
-      const errRecord = errObj as Record<string, unknown>;
-      const fcmStatus = typeof errRecord.status === "string" ? errRecord.status : "";
-      const message = typeof errRecord.message === "string" ? errRecord.message : "";
-      const details = Array.isArray(errRecord.details) ? errRecord.details : [];
-      const errorCodes = details
-        .map((d) =>
-          typeof d === "object" && d !== null && "errorCode" in d
-            ? String((d as { errorCode?: unknown }).errorCode)
-            : "",
-        )
-        .filter(Boolean);
+  if (typeof body !== "object" || body === null || !("error" in body)) {
+    return "error";
+  }
 
-      if (fcmStatus === "UNREGISTERED" || errorCodes.includes("UNREGISTERED")) {
-        return "invalid_token";
+  const errObj = (body as { error?: unknown }).error;
+  if (typeof errObj !== "object" || errObj === null) {
+    return "error";
+  }
+
+  const errRecord = errObj as Record<string, unknown>;
+  const details = Array.isArray(errRecord.details) ? errRecord.details : [];
+
+  let hasFcmUnregistered = false;
+  let hasFcmInvalidArgument = false;
+  let hasTokenFieldViolation = false;
+
+  for (const item of details) {
+    if (typeof item !== "object" || item === null) continue;
+    const detail = item as Record<string, unknown>;
+    const type = typeof detail["@type"] === "string" ? detail["@type"] : "";
+
+    if (type === FCM_ERROR_TYPE) {
+      if (detail.errorCode === "UNREGISTERED") {
+        hasFcmUnregistered = true;
+      } else if (detail.errorCode === "INVALID_ARGUMENT") {
+        hasFcmInvalidArgument = true;
       }
-
-      if (fcmStatus === "INVALID_ARGUMENT" || errorCodes.includes("INVALID_ARGUMENT")) {
-        if (!message || /token|registration/i.test(message)) {
-          return "invalid_token";
+    } else if (type === BAD_REQUEST_TYPE && Array.isArray(detail.fieldViolations)) {
+      for (const v of detail.fieldViolations) {
+        if (typeof v !== "object" || v === null) continue;
+        const violation = v as Record<string, unknown>;
+        const field = typeof violation.field === "string" ? violation.field : "";
+        const description =
+          typeof violation.description === "string" ? violation.description : "";
+        if (
+          field === "message.token" ||
+          (!field && /registration\s*token/i.test(description))
+        ) {
+          hasTokenFieldViolation = true;
         }
       }
     }
+  }
+
+  if (hasFcmUnregistered) {
+    return "invalid_token";
+  }
+
+  if (hasFcmInvalidArgument && hasTokenFieldViolation) {
+    return "invalid_token";
   }
 
   return "error";
@@ -229,10 +281,11 @@ export async function sendPush(
 
   const fetchFn = options?.fetch ?? globalThis.fetch;
   const nowFn = options?.clock ?? options?.now ?? Date.now;
+  const timeoutMs = options?.timeoutMs ?? REQUEST_TIMEOUT_MS;
 
   let accessToken: string;
   try {
-    accessToken = await getAccessToken(account, fetchFn, nowFn());
+    accessToken = await getAccessToken(account, fetchFn, nowFn(), timeoutMs);
   } catch {
     return "error";
   }
@@ -259,14 +312,19 @@ export async function sendPush(
   };
 
   try {
-    const res = await fetchWithTimeout(fetchFn, endpoint, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
+    const res = await fetchWithTimeout(
+      fetchFn,
+      endpoint,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(requestBody),
       },
-      body: JSON.stringify(requestBody),
-    });
+      timeoutMs,
+    );
 
     if (res.ok) {
       return "ok";
@@ -274,7 +332,7 @@ export async function sendPush(
 
     let parsedBody: unknown = null;
     try {
-      parsedBody = await res.json();
+      parsedBody = res.text ? JSON.parse(res.text) : null;
     } catch {
       parsedBody = null;
     }

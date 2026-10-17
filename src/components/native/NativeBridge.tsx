@@ -5,47 +5,12 @@ import { useAccount } from "../account/AccountProvider";
 import { api } from "../account/api";
 import { BellIcon, CloseIcon } from "../icons";
 import type { Query } from "../recentStore";
+import { safeSameOriginUrl } from "./safeUrl";
+
+export { safeSameOriginUrl };
 
 export const PUSH_TOKEN_STORAGE_KEY = "trippie.pushToken";
 export const PUSH_PROMPTED_STORAGE_KEY = "trippie.pushPrompted";
-
-/**
- * Validates a notification target URL: returns a safe relative path (`pathname + search + hash`)
- * only if `rawUrl` is a relative path starting with `/` (not `//`) or an `http(s)` URL whose
- * origin matches `currentOrigin`.
- */
-export function resolveNotificationUrl(
-  rawUrl: unknown,
-  currentOrigin: string,
-): string | null {
-  if (typeof rawUrl !== "string") return null;
-  const trimmed = rawUrl.trim();
-  if (!trimmed) return null;
-
-  if (trimmed.startsWith("/") && !trimmed.startsWith("//")) {
-    try {
-      const parsed = new URL(trimmed, currentOrigin);
-      if (parsed.origin !== currentOrigin) return null;
-      return `${parsed.pathname}${parsed.search}${parsed.hash}`;
-    } catch {
-      return null;
-    }
-  }
-
-  try {
-    const parsed = new URL(trimmed);
-    if (
-      (parsed.protocol === "http:" || parsed.protocol === "https:") &&
-      parsed.origin === currentOrigin
-    ) {
-      return `${parsed.pathname}${parsed.search}${parsed.hash}`;
-    }
-  } catch {
-    return null;
-  }
-
-  return null;
-}
 
 /**
  * Parses deep-link search query parameters from a URL query string.
@@ -247,17 +212,18 @@ export default function NativeBridge() {
           (event) => {
             try {
               const rawUrl = (event?.notification?.data as { url?: unknown } | undefined)?.url;
-              const safePath = resolveNotificationUrl(rawUrl, window.location.origin);
-              if (!safePath) return;
+              if (typeof rawUrl !== "string") return;
+              const safeUrl = safeSameOriginUrl(rawUrl, window.location.origin);
+              if (!safeUrl) return;
 
-              const parsed = new URL(safePath, window.location.origin);
+              const parsed = new URL(safeUrl);
               const deepQuery =
                 parsed.pathname === "/" ? parseDeepLinkQuery(parsed.search) : null;
               if (deepQuery && window.location.pathname === "/") {
                 window.history.replaceState(null, "", "/");
                 searchAgainRef.current(deepQuery);
               } else {
-                window.location.assign(safePath);
+                window.location.assign(safeUrl);
               }
             } catch {
               // Ignore malformed notification data

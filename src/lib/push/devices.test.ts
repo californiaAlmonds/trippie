@@ -3,7 +3,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { createUser, deleteUserAccount } from "../auth/users.ts";
+import {
+  createUser,
+  deleteUserAccount,
+  insertSessionIfPasswordMatches,
+} from "../auth/users.ts";
+import { hashSessionToken } from "../auth/session-core.ts";
 import { getClient } from "../store.ts";
 import {
   isValidDevicePlatform,
@@ -12,6 +17,7 @@ import {
   MAX_DEVICES_PER_USER,
   registerDevice,
   unregisterDevice,
+  unregisterDeviceOnLogout,
 } from "./devices.ts";
 
 function makeToken(index: number): string {
@@ -114,6 +120,76 @@ test("devices: upsert, reassign across users, cap-10 pruning, scoped delete, and
 
     assert.deepEqual(await listUserDeviceTokens(userA.id), []);
     assert.deepEqual(await listUserDeviceTokens(userB.id), [makeToken(99)]);
+
+    client.close();
+  } finally {
+    if (prevUrl === undefined) delete process.env.TURSO_DATABASE_URL;
+    else process.env.TURSO_DATABASE_URL = prevUrl;
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // Windows SQLite file handle may release asynchronously on process exit
+    }
+  }
+});
+
+test("unregisterDeviceOnLogout removes device for the session user and works with or without deviceToken", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "trippie-logout-devices-"));
+  const dbPath = join(dir, "logout-devices.db").replace(/\\/g, "/");
+  const prevUrl = process.env.TURSO_DATABASE_URL;
+  process.env.TURSO_DATABASE_URL = `file:${dbPath}`;
+
+  try {
+    const client = await getClient();
+    const userARes = await createUser("logouta@example.com", "scrypt$hash", { verified: true });
+    const userBRes = await createUser("logoutb@example.com", "scrypt$hash", { verified: true });
+    assert.ok(userARes.ok && userBRes.ok);
+    const userA = userARes.user;
+    const userB = userBRes.user;
+
+    const tokA1 = makeToken(101);
+    const tokA2 = makeToken(102);
+    const tokB1 = makeToken(201);
+
+    await registerDevice(userA.id, tokA1, "android");
+    await registerDevice(userA.id, tokA2, "android");
+    await registerDevice(userB.id, tokB1, "android");
+
+    // 1. Logout with a valid deviceToken removes that device for the session user and destroys the session
+    const sess1 = await insertSessionIfPasswordMatches(userA.id, "scrypt$hash");
+    assert.ok(sess1);
+    await unregisterDeviceOnLogout(userA.id, tokA1, sess1.token);
+
+    assert.deepEqual(await listUserDeviceTokens(userA.id), [tokA2]);
+    assert.deepEqual(await listUserDeviceTokens(userB.id), [tokB1]);
+    const sess1Row = await client.execute({
+      sql: "SELECT 1 FROM sessions WHERE token_hash = ?",
+      args: [hashSessionToken(sess1.token)],
+    });
+    assert.equal(sess1Row.rows.length, 0);
+
+    // 2. Logout with another user's deviceToken does not delete the other user's device
+    await unregisterDeviceOnLogout(userA.id, tokB1);
+    assert.deepEqual(await listUserDeviceTokens(userB.id), [tokB1]);
+
+    // 3. Logout without deviceToken or with invalid deviceToken still succeeds and leaves devices intact
+    const sess2 = await insertSessionIfPasswordMatches(userA.id, "scrypt$hash");
+    assert.ok(sess2);
+    await unregisterDeviceOnLogout(userA.id, undefined, sess2.token);
+    assert.deepEqual(await listUserDeviceTokens(userA.id), [tokA2]);
+    const sess2Row = await client.execute({
+      sql: "SELECT 1 FROM sessions WHERE token_hash = ?",
+      args: [hashSessionToken(sess2.token)],
+    });
+    assert.equal(sess2Row.rows.length, 0);
+
+    await unregisterDeviceOnLogout(userA.id, "too_short");
+    await unregisterDeviceOnLogout(null, tokA2);
+    assert.deepEqual(await listUserDeviceTokens(userA.id), [tokA2]);
+
+    // 4. Direct userId + valid deviceToken removes the user's remaining device
+    await unregisterDeviceOnLogout(userA.id, tokA2);
+    assert.deepEqual(await listUserDeviceTokens(userA.id), []);
 
     client.close();
   } finally {
