@@ -2,7 +2,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { type Client, createClient, type InStatement, type ResultSet, type TransactionMode } from "@libsql/client";
 import { migrate } from "./migrations.ts";
 import type { Cabin, DayFare, PriceStats, RouteFreshness } from "./types.ts";
-import { addDays, computeWindows, monthBounds } from "./windows.ts";
+import { addDays, computeWindows, diffDays, monthBounds } from "./windows.ts";
 
 export type { PriceStats, RouteFreshness } from "./types.ts";
 
@@ -417,9 +417,83 @@ export interface FreshnessRouteParams {
   cabin: Cabin;
 }
 
+export const FRESH_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
+export const FRESH_COVERAGE_THRESHOLD = 0.6; // 60% per-leg fresh date coverage
 const COLLECTING_WINDOW_MS = 30 * 60 * 1000;
 
-/** Returns lastCheckedAt (newest scraped_at for this route+cabin+range), tracked, and collecting flags. */
+export async function computeLegFreshness(
+  origin: string,
+  destination: string,
+  cabin: string,
+  from: string,
+  to: string,
+  freshCutoffIso: string,
+): Promise<{ covered: boolean; newestScrapedAt: string | null }> {
+  const expectedDates = diffDays(from, to) + 1;
+  if (expectedDates <= 0) {
+    return { covered: false, newestScrapedAt: null };
+  }
+  const database = await db();
+  const rs = await database.execute({
+    sql: `SELECT COUNT(DISTINCT travel_date) AS fresh_days, MAX(scraped_at) AS newest
+          FROM fares
+          WHERE origin = ? AND destination = ? AND cabin = ?
+            AND travel_date BETWEEN ? AND ?
+            AND status = 'ok' AND price IS NOT NULL
+            AND scraped_at > ?`,
+    args: [origin, destination, cabin, from, to, freshCutoffIso],
+  });
+  const freshDays = Number(rs.rows[0]?.fresh_days ?? 0);
+  const newest = rs.rows[0]?.newest != null ? String(rs.rows[0].newest) : null;
+  return {
+    covered: freshDays / expectedDates >= FRESH_COVERAGE_THRESHOLD,
+    newestScrapedAt: newest,
+  };
+}
+
+export async function computeRouteFreshnessCoverage(
+  route: FreshnessRouteParams,
+  nowMs = Date.now(),
+): Promise<{ covered: boolean; faresFreshAt: string | null }> {
+  const { first, last } = monthBounds(route.month);
+  const freshCutoffIso = new Date(nowMs - FRESH_TTL_MS).toISOString();
+  const outFresh = await computeLegFreshness(
+    route.origin,
+    route.destination,
+    route.cabin,
+    first,
+    last,
+    freshCutoffIso,
+  );
+  if (route.trip === "oneway") {
+    return {
+      covered: outFresh.covered,
+      faresFreshAt: outFresh.covered ? outFresh.newestScrapedAt : null,
+    };
+  }
+  const inFrom = addDays(first, route.minGap);
+  const inTo = addDays(last, route.maxGap);
+  const inFresh = await computeLegFreshness(
+    route.destination,
+    route.origin,
+    route.cabin,
+    inFrom,
+    inTo,
+    freshCutoffIso,
+  );
+  if (outFresh.covered && inFresh.covered && outFresh.newestScrapedAt && inFresh.newestScrapedAt) {
+    return {
+      covered: true,
+      faresFreshAt:
+        outFresh.newestScrapedAt < inFresh.newestScrapedAt
+          ? outFresh.newestScrapedAt
+          : inFresh.newestScrapedAt,
+    };
+  }
+  return { covered: false, faresFreshAt: null };
+}
+
+/** Returns lastCheckedAt (newest scraped_at for this route+cabin+range), tracked, collecting, and per-leg covered flags. */
 export async function getFreshness(
   routeOrOrigin: FreshnessRouteParams | string,
   destinationOrNow?: string | number | Date,
@@ -458,7 +532,7 @@ export async function getFreshness(
   const inFrom = addDays(first, p.minGap);
   const inTo = addDays(last, p.maxGap);
 
-  const [fareRs, trackRs] = await Promise.all([
+  const [fareRs, trackRs, coverage] = await Promise.all([
     database.execute({
       sql: `SELECT MAX(scraped_at) AS newest FROM fares
             WHERE cabin = ? AND status = 'ok' AND price IS NOT NULL
@@ -472,6 +546,7 @@ export async function getFreshness(
               AND min_gap = ? AND max_gap = ? AND cabin = ?`,
       args: [p.origin, p.destination, p.month, p.trip, p.minGap, p.maxGap, p.cabin],
     }),
+    computeRouteFreshnessCoverage(p, nowMs),
   ]);
 
   const newest = fareRs.rows[0]?.newest;
@@ -496,6 +571,8 @@ export async function getFreshness(
     lastCheckedAt,
     tracked,
     collecting,
+    covered: coverage.covered,
   };
 }
+
 

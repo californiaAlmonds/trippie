@@ -1,12 +1,16 @@
 "use client";
 
-import { useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useAccount } from "../account/AccountProvider";
 import type { Plan } from "../account/api";
 import { useFocusTrap } from "../account/useFocusTrap";
 import { lookupKnownAirportCity } from "../AirportPicker";
 import { useCurrency } from "../currency/CurrencyProvider";
 import { AlertIcon, BellIcon, CloseIcon, TrashIcon } from "../icons";
+import {
+  createPlanCommitQueue,
+  type PlanCommitQueue,
+} from "./commitQueue";
 import PriceLimitSlider, {
   clampAndRoundInr,
   computeDefaultTargetInr,
@@ -32,14 +36,52 @@ function PlanCard({ plan }: { plan: Plan }) {
   const [itemError, setItemError] = useState("");
   const [busy, setBusy] = useState(false);
   const [savingLimit, setSavingLimit] = useState(false);
-  const commitSeqRef = useRef(0);
+
+  const latestRef = useRef({ plan, updatePlan, defaultTarget });
+  const queueRef = useRef<PlanCommitQueue<number, { plan: Plan }> | null>(null);
+
+  useEffect(() => {
+    latestRef.current = { plan, updatePlan, defaultTarget };
+  }, [plan, updatePlan, defaultTarget]);
+
+  useEffect(() => {
+    if (plan.targetPrice !== null) {
+      queueRef.current?.syncServerValue(String(plan.id), plan.targetPrice);
+    }
+  }, [plan.id, plan.targetPrice]);
 
   if (plan.targetPrice !== prevServerTarget) {
     setPrevServerTarget(plan.targetPrice);
-    setLimitOpen(plan.targetPrice !== null);
-    if (plan.targetPrice !== null) {
-      setTargetInr(plan.targetPrice);
+    if (!savingLimit) {
+      setLimitOpen(plan.targetPrice !== null);
+      if (plan.targetPrice !== null) {
+        setTargetInr(plan.targetPrice);
+      }
     }
+  }
+
+  function getCommitQueue(): PlanCommitQueue<number, { plan: Plan }> {
+    if (!queueRef.current) {
+      queueRef.current = createPlanCommitQueue<number, { plan: Plan }>({
+        initialValue:
+          latestRef.current.plan.targetPrice ?? latestRef.current.defaultTarget,
+        send: (_planId, value, { isCurrent }) =>
+          latestRef.current.updatePlan(
+            latestRef.current.plan.id,
+            { targetPrice: value },
+            { optimistic: false, isCurrent },
+          ),
+        onStateChange: (_planId, state) => {
+          setSavingLimit(state.saving);
+        },
+        onRollback: (_planId, rollbackValue, error) => {
+          setItemError(error || "Could not update target price.");
+          setTargetInr(rollbackValue);
+          setLimitOpen(latestRef.current.plan.targetPrice !== null);
+        },
+      });
+    }
+    return queueRef.current;
   }
 
   const stayLabel =
@@ -70,7 +112,6 @@ function PlanCard({ plan }: { plan: Plan }) {
   async function handleToggleLimit() {
     if (plan.expired || busy) return;
     setItemError("");
-    commitSeqRef.current++;
     const prevTarget = targetInr;
     const nextEnabled = !limitOpen;
     setLimitOpen(nextEnabled);
@@ -82,6 +123,7 @@ function PlanCard({ plan }: { plan: Plan }) {
     if (nextTarget !== null) {
       setTargetInr(nextTarget);
     }
+    getCommitQueue().cancel(String(plan.id), nextTarget ?? defaultTarget);
 
     setBusy(true);
     try {
@@ -104,34 +146,12 @@ function PlanCard({ plan }: { plan: Plan }) {
     if (plan.expired) return;
     const clamped = clampAndRoundInr(nextInr);
     setTargetInr(clamped);
-    if (clamped === plan.targetPrice) {
-      return;
-    }
-
-    const seq = ++commitSeqRef.current;
-    const rollbackTarget = plan.targetPrice ?? defaultTarget;
-    const rollbackOpen = plan.targetPrice !== null;
-
     setItemError("");
-    setSavingLimit(true);
-    try {
-      const res = await updatePlan(plan.id, { targetPrice: clamped });
-      if (commitSeqRef.current !== seq) return;
-      if (!res.ok) {
-        setItemError(res.error ?? "Could not update target price.");
-        setTargetInr(rollbackTarget);
-        setLimitOpen(rollbackOpen);
-      }
-    } catch {
-      if (commitSeqRef.current !== seq) return;
-      setItemError("Could not update target price.");
-      setTargetInr(rollbackTarget);
-      setLimitOpen(rollbackOpen);
-    } finally {
-      if (commitSeqRef.current === seq) {
-        setSavingLimit(false);
-      }
-    }
+    await getCommitQueue().commit(
+      String(plan.id),
+      clamped,
+      plan.targetPrice ?? defaultTarget,
+    );
   }
 
   async function handleConfirmDelete() {
@@ -296,7 +316,13 @@ function PlanCard({ plan }: { plan: Plan }) {
               currentBest={plan.lastSeenPrice ?? plan.lastAlertPrice ?? null}
               targetPriceInr={targetInr}
               onChangeInr={(val) => {
-                setTargetInr(clampAndRoundInr(val));
+                const clamped = clampAndRoundInr(val);
+                setTargetInr(clamped);
+                getCommitQueue().setLocalValue(
+                  String(plan.id),
+                  clamped,
+                  plan.targetPrice ?? defaultTarget,
+                );
               }}
               onCommitInr={(val) => {
                 void handleCommitSliderLimit(val);

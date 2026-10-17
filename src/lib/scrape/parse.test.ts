@@ -151,6 +151,26 @@ test("parseResults parses real captured Google Flights fixtures (economy nonstop
   assert.equal(findCheapestRowIndex(["Select flight ₹99", fixtures.economy_nonstop.collapsed, fixtures.economy_one_stop.collapsed]), 2);
 });
 
+test("business cabin requires 'Business Class' in the expanded cheapest row and ignores the 'Cheapest from' tab", () => {
+  const url = "https://www.google.com/travel/flights?q=x";
+  const biz = fixtures.business_one_stop;
+
+  // Real captures: collapsed rows never name the cabin, the expanded details do.
+  const ok = parseResults(url, "Cheapest\nfrom ₹9,999", [biz.collapsed], biz.expanded, "business");
+  assert.equal(ok.status, "ok");
+  assert.equal(ok.status === "ok" && ok.fare.price, 45449);
+
+  // Cheapest row expands to economy details: not a business price.
+  const econ = fixtures.economy_one_stop;
+  assert.deepEqual(parseResults(url, "body", [econ.collapsed], econ.expanded, "business"), { status: "parse_error" });
+
+  // No expanded details captured: cabin can't be verified.
+  assert.deepEqual(parseResults(url, "body", [biz.collapsed], undefined, "business"), { status: "parse_error" });
+
+  // A cheaper 'Cheapest from' tab alone never yields a business fare.
+  assert.deepEqual(parseResults(url, "Cheapest\nfrom ₹9,999", [], undefined, "business"), { status: "parse_error" });
+});
+
 test("parseResults lets a cheaper 'Cheapest from' tab win", () => {
   const out = parseResults("https://www.google.com/travel/flights", "Cheapest\nfrom ₹9,999", rows);
   assert.deepEqual(out, {

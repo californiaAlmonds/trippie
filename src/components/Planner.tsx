@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { SearchResult, TripMode } from "@/lib/search";
-import type { Cabin, DayFare, TripWindow } from "@/lib/types";
+import type { Cabin, DayFare, RouteFreshness, TripWindow } from "@/lib/types";
 import AccountSlot from "./AccountSlot";
 import { AccountProvider, useAccount } from "./account/AccountProvider";
 import AuthDialog from "./account/AuthDialog";
@@ -21,10 +21,7 @@ import { BrandMarkIcon, SpinnerIcon } from "./icons";
 import NativeBridge, { parseDeepLinkQuery } from "./native/NativeBridge";
 import OneWayBookingPanel from "./OneWayBookingPanel";
 import PriceCalendar from "./PriceCalendar";
-import PriceInsightsCard, {
-  type RouteFreshness,
-  type RouteStatsBundle,
-} from "./PriceInsightsCard";
+import PriceInsightsCard, { type RouteStatsBundle } from "./PriceInsightsCard";
 import SavedPlansDrawer from "./plans/SavedPlansDrawer";
 import SavePlanControl from "./plans/SavePlanControl";
 import RecentSearches from "./RecentSearches";
@@ -52,8 +49,13 @@ const TWELVE_HOURS_MS = 12 * 60 * 60_000;
 const POLL_INTERVAL_MS = 30_000;
 const MAX_POLL_DURATION_MS = 12 * 60_000;
 
-function isStaleOrMissingFreshness(freshness?: RouteFreshness | null): boolean {
-  if (!freshness || !freshness.lastCheckedAt) return true;
+function shouldRequestRouteTrack(freshness?: Partial<RouteFreshness> | null): boolean {
+  if (!freshness) return true;
+  if (freshness.collecting) return false;
+  if (typeof freshness.covered === "boolean") {
+    return !freshness.covered;
+  }
+  if (!freshness.lastCheckedAt) return true;
   const ms = Date.parse(freshness.lastCheckedAt);
   if (!Number.isFinite(ms)) return true;
   return Date.now() - ms > TWELVE_HOURS_MS;
@@ -184,13 +186,11 @@ function PlannerContent({
           void api("/api/recent", { method: "POST", body: q });
         }
 
-        // Trigger POST /api/routes/track if freshness is missing or lastCheckedAt is null or older than 12h
+        // Trigger POST /api/routes/track whenever per-leg coverage is false and not already collecting
         const freshness = body.freshness;
         if (freshness?.collecting) {
           setTrackStatus("collecting");
-        }
-
-        if (isStaleOrMissingFreshness(freshness)) {
+        } else if (shouldRequestRouteTrack(freshness)) {
           void api<{
             status?: "queued" | "fresh" | "throttled" | "disabled";
             etaMinutes?: number | null;
@@ -215,9 +215,9 @@ function PlannerContent({
                 setTrackEtaMin(trackRes.data.etaMinutes);
               }
             } else if (st === "throttled") {
-              if (!freshness?.collecting) setTrackStatus("throttled");
+              setTrackStatus("throttled");
             } else if (st === "disabled") {
-              if (!freshness?.collecting) setTrackStatus("disabled");
+              setTrackStatus("disabled");
             }
           });
         }

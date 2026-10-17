@@ -68,7 +68,7 @@ export function parseSearch(sp: URLSearchParams, now = new Date()): SearchParams
 const TTL_MS = 30 * 60_000;
 const cache = new Map<string, { at: number; value: SearchResult }>();
 
-export async function runSearch(p: SearchParams, limit = 60): Promise<SearchResult> {
+export async function runSearch(p: SearchParams, limit = 60, now?: number | Date): Promise<SearchResult> {
   const provider = getProvider();
   const { first, last } = monthBounds(p.month);
   const inFrom = addDays(first, p.minGap);
@@ -77,7 +77,7 @@ export async function runSearch(p: SearchParams, limit = 60): Promise<SearchResu
   const hasDb = dbConfigured();
   const [freshness, stats] = hasDb
     ? await Promise.all([
-        getFreshness(p),
+        getFreshness(p, now),
         (async () => {
           if (p.trip === "oneway") {
             const outStats = await getOneWayStats(p.origin, p.destination, first, last, p.cabin);
@@ -92,12 +92,12 @@ export async function runSearch(p: SearchParams, limit = 60): Promise<SearchResu
         })(),
       ])
     : [
-        { lastCheckedAt: null, tracked: false, collecting: false } satisfies RouteFreshness,
+        { lastCheckedAt: null, tracked: false, collecting: false, covered: false } satisfies RouteFreshness,
         { outbound: null, inbound: null, total: null },
       ];
 
   const dbUrl = process.env.TURSO_DATABASE_URL ?? "";
-  const key = `${dbUrl}|${provider.name}|${p.trip}|${p.cabin}|${p.origin}|${p.destination}|${p.month}|${p.minGap}|${p.maxGap}|${freshness.lastCheckedAt ?? ""}`;
+  const key = `${dbUrl}|${provider.name}|${p.trip}|${p.cabin}|${p.origin}|${p.destination}|${p.month}|${p.minGap}|${p.maxGap}|${freshness.lastCheckedAt ?? ""}|${freshness.covered ? "1" : "0"}`;
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < TTL_MS) {
     return { ...hit.value, stats, freshness };

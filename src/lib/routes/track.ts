@@ -1,7 +1,14 @@
 import { ipRateLimitKey, rateLimit } from "../auth/rateLimit.ts";
 import { maxAllowedMonth, parseSearch, type SearchParams } from "../search.ts";
-import { getClient } from "../store.ts";
-import { addDays, diffDays, monthBounds } from "../windows.ts";
+import {
+  computeLegFreshness,
+  computeRouteFreshnessCoverage,
+  FRESH_COVERAGE_THRESHOLD,
+  FRESH_TTL_MS,
+  getClient,
+} from "../store.ts";
+
+export { computeLegFreshness, computeRouteFreshnessCoverage, FRESH_COVERAGE_THRESHOLD, FRESH_TTL_MS };
 
 export type TrackStatus = "queued" | "fresh" | "throttled" | "disabled";
 
@@ -12,8 +19,6 @@ export interface TrackResult {
 
 export type RouteSource = "search" | "plan" | "config";
 
-export const FRESH_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
-export const FRESH_COVERAGE_THRESHOLD = 0.6; // 60% per-leg fresh date coverage
 export const DISPATCH_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
 export const GLOBAL_DISPATCH_LIMIT = 20;
 export const CLIENT_DISPATCH_LIMIT = 6;
@@ -228,36 +233,6 @@ export interface TrackRouteOptions {
   githubRepo?: string;
 }
 
-async function computeLegFreshness(
-  origin: string,
-  destination: string,
-  cabin: string,
-  from: string,
-  to: string,
-  freshCutoffIso: string,
-): Promise<{ covered: boolean; newestScrapedAt: string | null }> {
-  const expectedDates = diffDays(from, to) + 1;
-  if (expectedDates <= 0) {
-    return { covered: false, newestScrapedAt: null };
-  }
-  const client = await getClient();
-  const rs = await client.execute({
-    sql: `SELECT COUNT(DISTINCT travel_date) AS fresh_days, MAX(scraped_at) AS newest
-          FROM fares
-          WHERE origin = ? AND destination = ? AND cabin = ?
-            AND travel_date BETWEEN ? AND ?
-            AND status = 'ok' AND price IS NOT NULL
-            AND scraped_at > ?`,
-    args: [origin, destination, cabin, from, to, freshCutoffIso],
-  });
-  const freshDays = Number(rs.rows[0]?.fresh_days ?? 0);
-  const newest = rs.rows[0]?.newest != null ? String(rs.rows[0].newest) : null;
-  return {
-    covered: freshDays / expectedDates >= FRESH_COVERAGE_THRESHOLD,
-    newestScrapedAt: newest,
-  };
-}
-
 /**
  * Checks horizon, prunes stale anonymous routes, evaluates per-leg freshness/cooldown/rate-limits/credentials,
  * and only persists + atomically claims cooldown + dispatches GitHub Actions when admitted.
@@ -291,24 +266,7 @@ export async function trackRoute(route: SearchParams, options?: TrackRouteOption
   const prevDispatchedAt = existingRow?.last_dispatched_at != null ? String(existingRow.last_dispatched_at) : null;
   const routeScrapedAt = existingRow?.last_scraped_at != null ? String(existingRow.last_scraped_at) : null;
 
-  const { first, last } = monthBounds(route.month);
-  const freshCutoffIso = new Date(nowMs - FRESH_TTL_MS).toISOString();
-
-  const outFresh = await computeLegFreshness(route.origin, route.destination, route.cabin, first, last, freshCutoffIso);
-  let faresFreshAt: string | null = null;
-  if (route.trip === "oneway") {
-    if (outFresh.covered) {
-      faresFreshAt = outFresh.newestScrapedAt;
-    }
-  } else {
-    const inFrom = addDays(first, route.minGap);
-    const inTo = addDays(last, route.maxGap);
-    const inFresh = await computeLegFreshness(route.destination, route.origin, route.cabin, inFrom, inTo, freshCutoffIso);
-    if (outFresh.covered && inFresh.covered && outFresh.newestScrapedAt && inFresh.newestScrapedAt) {
-      faresFreshAt =
-        outFresh.newestScrapedAt < inFresh.newestScrapedAt ? outFresh.newestScrapedAt : inFresh.newestScrapedAt;
-    }
-  }
+  const { faresFreshAt } = await computeRouteFreshnessCoverage(route, nowMs);
 
   const newestScrapedAt =
     faresFreshAt && routeScrapedAt
