@@ -210,6 +210,7 @@ test("getRouteStats, getOneWayStats, getBestWindowStats, getFreshness, and runSe
       lastCheckedAt: "2026-10-16T08:05:00.000Z",
       tracked: true,
       collecting: true,
+      covered: false,
     });
 
     // Once last_scraped_at >= last_dispatched_at => collecting: false
@@ -223,6 +224,7 @@ test("getRouteStats, getOneWayStats, getBestWindowStats, getFreshness, and runSe
       Date.parse("2026-10-16T10:10:00.000Z"),
     );
     assert.equal(freshDone.collecting, false);
+    assert.equal(freshDone.covered, false);
 
     // runSearch oneway includes stats computed from per-day current cheapest fares (total === outbound === oneWayStats, inbound === null)
     const onewayRes = await runSearch({
@@ -240,6 +242,7 @@ test("getRouteStats, getOneWayStats, getBestWindowStats, getFreshness, and runSe
     assert.deepEqual(onewayRes.stats.total, oneWayStats);
     assert.equal(onewayRes.days[0]?.price, oneWayStats.min);
     assert.equal(onewayRes.freshness.lastCheckedAt, "2026-10-16T08:02:00.000Z");
+    assert.equal(onewayRes.freshness.covered, false);
 
     const feb10 = onewayRes.outbound.find((d) => d.date === "2027-02-10")!;
     assert.equal(feb10.price, 7000);
@@ -266,4 +269,100 @@ test("getRouteStats, getOneWayStats, getBestWindowStats, getFreshness, and runSe
     }
   }
 });
+
+test("round-trip search freshness reports covered: false with one fresh outbound fare and zero inbound fares, and covered: true only when both legs meet per-leg coverage", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "trippie-search-cov-"));
+  const dbPath = join(dir, "cov.db").replace(/\\/g, "/");
+  const prevUrl = process.env.TURSO_DATABASE_URL;
+  const prevProvider = process.env.FARE_PROVIDER;
+  const prevTp = process.env.TRAVELPAYOUTS_TOKEN;
+  process.env.TURSO_DATABASE_URL = `file:${dbPath}`;
+  delete process.env.FARE_PROVIDER;
+  delete process.env.TRAVELPAYOUTS_TOKEN;
+
+  try {
+    const client = await getClient();
+    const nowIso = new Date().toISOString();
+    const route = {
+      origin: "BLR",
+      destination: "IXZ",
+      month: "2027-02",
+      trip: "round" as const,
+      minGap: 5,
+      maxGap: 7,
+      cabin: "economy" as const,
+    };
+
+    // Seed 1 fresh outbound fare (<12h old) and 0 inbound fares
+    await saveFares([
+      {
+        day: nowIso.slice(0, 10),
+        origin: "BLR",
+        destination: "IXZ",
+        date: "2027-02-10",
+        cabin: "economy",
+        price: 5100,
+        airline: "IndiGo",
+        stops: 0,
+        status: "ok",
+        scrapedAt: nowIso,
+      },
+    ]);
+
+    const freshnessOneOut = await getFreshness(route);
+    assert.equal(freshnessOneOut.lastCheckedAt, nowIso);
+    assert.equal(freshnessOneOut.covered, false);
+
+    const searchOneOut = await runSearch(route);
+    assert.equal(searchOneOut.freshness.lastCheckedAt, nowIso);
+    assert.equal(searchOneOut.freshness.covered, false);
+
+    // Seed >= 60% fresh outbound dates (18/28) but still 0 inbound fares => covered remains false for round trip
+    const outboundDates = Array.from({ length: 18 }, (_, i) => ({
+      day: nowIso.slice(0, 10),
+      origin: "BLR",
+      destination: "IXZ",
+      date: `2027-02-${String(i + 1).padStart(2, "0")}`,
+      cabin: "economy" as const,
+      price: 5100,
+      status: "ok" as const,
+      scrapedAt: nowIso,
+    }));
+    await saveFares(outboundDates);
+
+    const searchOutOnly = await runSearch(route);
+    assert.equal(searchOutOnly.freshness.covered, false);
+
+    // Seed >= 60% fresh inbound dates (18/30 in 2027-02-06..2027-03-07) => covered becomes true
+    const inboundDates = Array.from({ length: 18 }, (_, i) => ({
+      day: nowIso.slice(0, 10),
+      origin: "IXZ",
+      destination: "BLR",
+      date: `2027-02-${String(i + 6).padStart(2, "0")}`,
+      cabin: "economy" as const,
+      price: 5300,
+      status: "ok" as const,
+      scrapedAt: nowIso,
+    }));
+    await saveFares(inboundDates);
+
+    const searchBothLegs = await runSearch(route);
+    assert.equal(searchBothLegs.freshness.covered, true);
+
+    client.close();
+  } finally {
+    if (prevUrl === undefined) delete process.env.TURSO_DATABASE_URL;
+    else process.env.TURSO_DATABASE_URL = prevUrl;
+    if (prevProvider === undefined) delete process.env.FARE_PROVIDER;
+    else process.env.FARE_PROVIDER = prevProvider;
+    if (prevTp === undefined) delete process.env.TRAVELPAYOUTS_TOKEN;
+    else process.env.TRAVELPAYOUTS_TOKEN = prevTp;
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // Ignore cleanup race on Windows
+    }
+  }
+});
+
 

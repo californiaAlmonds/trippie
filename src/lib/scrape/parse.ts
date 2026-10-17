@@ -100,6 +100,11 @@ export function parseExpandedDetails(text: string): { flightNo: string | null; a
   return { flightNo: fallbackFlightNo, aircraft: fallbackAircraft };
 }
 
+// Collapsed rows never name the cabin; only the expanded details of a row do ("IndiGoBusiness ClassAirbus...").
+function hasBusinessEvidence(text: string): boolean {
+  return /business class/i.test(text);
+}
+
 /** Returns the index in `rows` of the cheapest valid flight row, or -1 if none. */
 export function findCheapestRowIndex(rows: string[]): number {
   let bestIdx = -1;
@@ -120,7 +125,7 @@ export function findCheapestRowIndex(rows: string[]): number {
 
 /**
  * rows: innerText of each flight list item; body: full page text; expandedRow: optional innerText of the expanded cheapest row.
- * Takes the cheapest row, and the "Cheapest from" tab as a lower bound when it undercuts the visible rows.
+ * Takes the cheapest row, and the "Cheapest from" tab as a lower bound when it undercuts the visible rows in economy mode.
  */
 export function parseResults(
   url: string,
@@ -190,6 +195,12 @@ export function parseResults(
     best.aircraft = details.aircraft;
   }
 
+  // expandedRow is the expanded cheapest row; without its business evidence the price may be economy.
+  if (cabin === "business") {
+    if (!best || !expandedRow || !hasBusinessEvidence(expandedRow)) return { status: "parse_error" };
+    return { status: "ok", fare: best };
+  }
+
   const tab = /Cheapest\s+from\s+₹\s?([\d,]+)/i.exec(body);
   const tabPrice = tab ? Number(tab[1].replaceAll(",", "")) : null;
   if (tabPrice !== null && (!best || tabPrice < best.price)) {
@@ -206,16 +217,9 @@ export function parseResults(
     };
   }
 
-  if (best && cabin === "business") {
-    const hasBusinessIndication =
-      rows.some((r) => /business/i.test(r)) || (expandedRow != null && /business/i.test(expandedRow));
-    if (!hasBusinessIndication) {
-      return { status: "parse_error" };
-    }
-  }
-
   if (best) return { status: "ok", fare: best };
   if (/no (flights|options)|couldn.t find/i.test(body)) return { status: "no_flights" };
   return { status: "parse_error" };
 }
+
 

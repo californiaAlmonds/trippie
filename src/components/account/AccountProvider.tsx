@@ -41,6 +41,11 @@ export interface OpenAuthDialogOptions {
   onSuccess?: (user: AccountUser) => void | Promise<void>;
 }
 
+export interface UpdatePlanOptions {
+  optimistic?: boolean;
+  isCurrent?: () => boolean;
+}
+
 export interface AccountContextValue {
   user: AccountUser | null;
   status: AccountStatus;
@@ -69,6 +74,7 @@ export interface AccountContextValue {
   updatePlan: (
     id: string | number,
     patch: { alertEnabled?: boolean; targetPrice?: number | null },
+    options?: UpdatePlanOptions,
   ) => Promise<ApiResult<{ plan: Plan }>>;
   deletePlan: (id: string | number) => Promise<ApiResult<null>>;
   searchAgain: (q: Query) => void;
@@ -379,18 +385,30 @@ export function AccountProvider({
     [user?.verified, promptOnceForPush],
   );
 
+  const planUpdateSeqRef = useRef<Map<string, number>>(new Map());
+
   const updatePlan = useCallback(
     async (
       id: string | number,
       patch: { alertEnabled?: boolean; targetPrice?: number | null },
+      options?: UpdatePlanOptions,
     ): Promise<ApiResult<{ plan: Plan }>> => {
-      let snapshot: Plan[] = [];
+      const key = String(id);
+      const seq = (planUpdateSeqRef.current.get(key) ?? 0) + 1;
+      planUpdateSeqRef.current.set(key, seq);
+
+      const isStillCurrent = () =>
+        planUpdateSeqRef.current.get(key) === seq &&
+        (options?.isCurrent ? options.isCurrent() : true);
+
+      const useOptimistic = options?.optimistic !== false;
+      let previousPlan: Plan | null = null;
       let optimisticPlan: Plan | null = null;
 
-      setPlans((prev) => {
-        snapshot = prev;
-        return prev.map((p) => {
-          if (String(p.id) !== String(id)) return p;
+      setPlans((prev) =>
+        prev.map((p) => {
+          if (String(p.id) !== key) return p;
+          previousPlan = p;
           const next: Plan = {
             ...p,
             ...(patch.alertEnabled !== undefined
@@ -401,22 +419,26 @@ export function AccountProvider({
               : {}),
           };
           optimisticPlan = next;
-          return next;
-        });
-      });
+          return useOptimistic ? next : p;
+        }),
+      );
 
       const res = await api<{ plan: Plan }>(
-        `/api/plans/${encodeURIComponent(String(id))}`,
+        `/api/plans/${encodeURIComponent(key)}`,
         {
           method: "PATCH",
           body: patch,
         },
       );
 
+      if (!isStillCurrent()) {
+        return res;
+      }
+
       if (res.ok && res.data?.plan) {
         const updated = res.data.plan;
         setPlans((prev) =>
-          prev.map((p) => (String(p.id) === String(id) ? updated : p)),
+          prev.map((p) => (String(p.id) === key ? updated : p)),
         );
         if (patch.alertEnabled === true && updated.alertEnabled) {
           promptOnceForPush();
@@ -425,13 +447,22 @@ export function AccountProvider({
       }
 
       if (isEndpointUnavailable(res) && optimisticPlan) {
+        const applied = optimisticPlan;
+        setPlans((prev) =>
+          prev.map((p) => (String(p.id) === key ? applied : p)),
+        );
         if (patch.alertEnabled === true) {
           promptOnceForPush();
         }
-        return { ok: true, status: 200, data: { plan: optimisticPlan } };
+        return { ok: true, status: 200, data: { plan: applied } };
       }
 
-      setPlans(snapshot);
+      if (useOptimistic && previousPlan) {
+        const rollback = previousPlan;
+        setPlans((prev) =>
+          prev.map((p) => (String(p.id) === key ? rollback : p)),
+        );
+      }
       return res;
     },
     [promptOnceForPush],

@@ -45,5 +45,7 @@ export interface RouteFreshness {
   lastCheckedAt: string | null;
   tracked: boolean;
   collecting: boolean;
+  covered: boolean;
 }
+
 
