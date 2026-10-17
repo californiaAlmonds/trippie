@@ -7,17 +7,20 @@ import { useFocusTrap } from "../account/useFocusTrap";
 import { lookupKnownAirportCity } from "../AirportPicker";
 import { useCurrency } from "../currency/CurrencyProvider";
 import { AlertIcon, BellIcon, CloseIcon, TrashIcon } from "../icons";
-import {
-  createPlanCommitQueue,
-  type PlanCommitQueue,
-} from "./commitQueue";
 import PriceLimitSlider, {
   clampAndRoundInr,
   computeDefaultTargetInr,
 } from "./PriceLimitSlider";
 
 function PlanCard({ plan }: { plan: Plan }) {
-  const { user, updatePlan, deletePlan, searchAgain } = useAccount();
+  const {
+    user,
+    patchPlan,
+    setPlanLocalValue,
+    isPlanSaving,
+    deletePlan,
+    searchAgain,
+  } = useAccount();
   const { format } = useCurrency();
 
   const defaultTarget = computeDefaultTargetInr(
@@ -25,64 +28,18 @@ function PlanCard({ plan }: { plan: Plan }) {
     plan.lastSeenPrice ?? plan.lastAlertPrice ?? 12_000,
   );
 
-  const [prevServerTarget, setPrevServerTarget] = useState<number | null>(
-    plan.targetPrice,
-  );
-  const [limitOpen, setLimitOpen] = useState(plan.targetPrice !== null);
-  const [targetInr, setTargetInr] = useState<number>(
-    plan.targetPrice !== null ? plan.targetPrice : defaultTarget,
-  );
+  const [draftTargetInr, setDraftTargetInr] = useState<number | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [itemError, setItemError] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [savingLimit, setSavingLimit] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
-  const latestRef = useRef({ plan, updatePlan, defaultTarget });
-  const queueRef = useRef<PlanCommitQueue<number, { plan: Plan }> | null>(null);
-
-  useEffect(() => {
-    latestRef.current = { plan, updatePlan, defaultTarget };
-  }, [plan, updatePlan, defaultTarget]);
+  const lastTargetRef = useRef<number>(plan.targetPrice ?? defaultTarget);
 
   useEffect(() => {
     if (plan.targetPrice !== null) {
-      queueRef.current?.syncServerValue(String(plan.id), plan.targetPrice);
+      lastTargetRef.current = plan.targetPrice;
     }
-  }, [plan.id, plan.targetPrice]);
-
-  if (plan.targetPrice !== prevServerTarget) {
-    setPrevServerTarget(plan.targetPrice);
-    if (!savingLimit) {
-      setLimitOpen(plan.targetPrice !== null);
-      if (plan.targetPrice !== null) {
-        setTargetInr(plan.targetPrice);
-      }
-    }
-  }
-
-  function getCommitQueue(): PlanCommitQueue<number, { plan: Plan }> {
-    if (!queueRef.current) {
-      queueRef.current = createPlanCommitQueue<number, { plan: Plan }>({
-        initialValue:
-          latestRef.current.plan.targetPrice ?? latestRef.current.defaultTarget,
-        send: (_planId, value, { isCurrent }) =>
-          latestRef.current.updatePlan(
-            latestRef.current.plan.id,
-            { targetPrice: value },
-            { optimistic: false, isCurrent },
-          ),
-        onStateChange: (_planId, state) => {
-          setSavingLimit(state.saving);
-        },
-        onRollback: (_planId, rollbackValue, error) => {
-          setItemError(error || "Could not update target price.");
-          setTargetInr(rollbackValue);
-          setLimitOpen(latestRef.current.plan.targetPrice !== null);
-        },
-      });
-    }
-    return queueRef.current;
-  }
+  }, [plan.targetPrice]);
 
   const stayLabel =
     plan.trip === "oneway"
@@ -94,81 +51,66 @@ function PlanCard({ plan }: { plan: Plan }) {
   const cabinLabel = (plan.cabin ?? "economy") === "business" ? "Business" : "Economy";
 
   async function handleToggleAlert() {
-    if (!user?.verified || plan.expired || busy) return;
+    if (!user?.verified || plan.expired || deleting) return;
     setItemError("");
-    setBusy(true);
-    try {
-      const res = await updatePlan(plan.id, {
-        alertEnabled: !plan.alertEnabled,
-      });
-      if (!res.ok) {
-        setItemError(res.error ?? "Could not update alert preference.");
-      }
-    } finally {
-      setBusy(false);
+    const outcome = await patchPlan(plan.id, {
+      alertEnabled: !plan.alertEnabled,
+    });
+    if (outcome.rolledBack) {
+      setItemError(outcome.error || "Could not update alert preference.");
     }
   }
 
   async function handleToggleLimit() {
-    if (plan.expired || busy) return;
+    if (plan.expired || deleting) return;
     setItemError("");
-    const prevTarget = targetInr;
-    const nextEnabled = !limitOpen;
-    setLimitOpen(nextEnabled);
+    setDraftTargetInr(null);
 
-    const nextTarget = nextEnabled
-      ? clampAndRoundInr(plan.targetPrice ?? targetInr ?? defaultTarget)
-      : null;
+    const nextTarget =
+      plan.targetPrice === null
+        ? clampAndRoundInr(lastTargetRef.current ?? defaultTarget)
+        : null;
 
     if (nextTarget !== null) {
-      setTargetInr(nextTarget);
+      lastTargetRef.current = nextTarget;
     }
-    getCommitQueue().cancel(String(plan.id), nextTarget ?? defaultTarget);
 
-    setBusy(true);
-    try {
-      const res = await updatePlan(plan.id, { targetPrice: nextTarget });
-      if (!res.ok) {
-        setItemError(res.error ?? "Could not update target price.");
-        setLimitOpen(plan.targetPrice !== null);
-        setTargetInr(plan.targetPrice ?? prevTarget);
-      }
-    } catch {
-      setItemError("Could not update target price.");
-      setLimitOpen(plan.targetPrice !== null);
-      setTargetInr(plan.targetPrice ?? prevTarget);
-    } finally {
-      setBusy(false);
+    const outcome = await patchPlan(plan.id, { targetPrice: nextTarget });
+    if (outcome.rolledBack) {
+      setItemError(outcome.error || "Could not update target price.");
     }
   }
 
   async function handleCommitSliderLimit(nextInr: number) {
-    if (plan.expired) return;
+    if (plan.expired || deleting) return;
     const clamped = clampAndRoundInr(nextInr);
-    setTargetInr(clamped);
+    lastTargetRef.current = clamped;
+    setDraftTargetInr(null);
     setItemError("");
-    await getCommitQueue().commit(
-      String(plan.id),
-      clamped,
-      plan.targetPrice ?? defaultTarget,
-    );
+    const outcome = await patchPlan(plan.id, { targetPrice: clamped });
+    if (outcome.rolledBack) {
+      setItemError(outcome.error || "Could not update target price.");
+    }
   }
 
   async function handleConfirmDelete() {
     setItemError("");
     setConfirmDelete(false);
-    setBusy(true);
+    setDeleting(true);
     try {
       const res = await deletePlan(plan.id);
       if (!res.ok) {
         setItemError(res.error ?? "Could not delete plan.");
       }
     } finally {
-      setBusy(false);
+      setDeleting(false);
     }
   }
 
-  const displayedTarget = limitOpen ? targetInr : null;
+  const limitOpen = plan.targetPrice !== null;
+  const effectiveTargetInr = draftTargetInr ?? plan.targetPrice ?? defaultTarget;
+  const displayedTarget = limitOpen ? effectiveTargetInr : null;
+  const savingLimit = isPlanSaving(plan.id);
 
   return (
     <li className="glass-subtle rounded-2xl p-4 grid gap-3">
@@ -250,7 +192,7 @@ function PlanCard({ plan }: { plan: Plan }) {
             role="switch"
             aria-checked={plan.alertEnabled}
             aria-label={`Price drop alert for ${plan.origin} to ${plan.destination}`}
-            disabled={!user?.verified || plan.expired || busy}
+            disabled={!user?.verified || plan.expired || deleting}
             onClick={handleToggleAlert}
             className="focus-ring inline-flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-end cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
           >
@@ -291,7 +233,7 @@ function PlanCard({ plan }: { plan: Plan }) {
               role="switch"
               aria-checked={limitOpen}
               aria-label={`Only alert below a price for ${plan.origin} to ${plan.destination}`}
-              disabled={plan.expired || busy}
+              disabled={plan.expired || deleting}
               onClick={handleToggleLimit}
               className="focus-ring inline-flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-end cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             >
@@ -314,15 +256,12 @@ function PlanCard({ plan }: { plan: Plan }) {
           {limitOpen && !plan.expired && (
             <PriceLimitSlider
               currentBest={plan.lastSeenPrice ?? plan.lastAlertPrice ?? null}
-              targetPriceInr={targetInr}
+              targetPriceInr={effectiveTargetInr}
               onChangeInr={(val) => {
                 const clamped = clampAndRoundInr(val);
-                setTargetInr(clamped);
-                getCommitQueue().setLocalValue(
-                  String(plan.id),
-                  clamped,
-                  plan.targetPrice ?? defaultTarget,
-                );
+                lastTargetRef.current = clamped;
+                setDraftTargetInr(clamped);
+                setPlanLocalValue(plan.id, { targetPrice: clamped });
               }}
               onCommitInr={(val) => {
                 void handleCommitSliderLimit(val);
@@ -362,7 +301,7 @@ function PlanCard({ plan }: { plan: Plan }) {
             <button
               type="button"
               onClick={handleConfirmDelete}
-              disabled={busy}
+              disabled={deleting}
               className="focus-ring min-h-[44px] rounded-full bg-red-600 hover:bg-red-700 px-3.5 py-1.5 text-xs font-semibold text-white cursor-pointer"
             >
               Confirm

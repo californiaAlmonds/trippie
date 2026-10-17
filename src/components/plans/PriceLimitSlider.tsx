@@ -98,6 +98,7 @@ export default function PriceLimitSlider({
   const dirtyInrRef = useRef<number | null>(null);
   const pointerDownRef = useRef(false);
   const debounceTimerRef = useRef<number | null>(null);
+  const windowPointerCleanupRef = useRef<(() => void) | null>(null);
 
   const flushCommit = useCallback(() => {
     if (debounceTimerRef.current !== null) {
@@ -115,7 +116,13 @@ export default function PriceLimitSlider({
     return () => {
       if (debounceTimerRef.current !== null) {
         window.clearTimeout(debounceTimerRef.current);
+        debounceTimerRef.current = null;
       }
+      if (windowPointerCleanupRef.current) {
+        windowPointerCleanupRef.current();
+        windowPointerCleanupRef.current = null;
+      }
+      dirtyInrRef.current = null;
     };
   }, []);
 
@@ -125,11 +132,19 @@ export default function PriceLimitSlider({
       window.clearTimeout(debounceTimerRef.current);
       debounceTimerRef.current = null;
     }
+    if (windowPointerCleanupRef.current) {
+      windowPointerCleanupRef.current();
+    }
     const handleWindowPointerEnd = () => {
       pointerDownRef.current = false;
       window.removeEventListener("pointerup", handleWindowPointerEnd);
       window.removeEventListener("pointercancel", handleWindowPointerEnd);
+      windowPointerCleanupRef.current = null;
       flushCommit();
+    };
+    windowPointerCleanupRef.current = () => {
+      window.removeEventListener("pointerup", handleWindowPointerEnd);
+      window.removeEventListener("pointercancel", handleWindowPointerEnd);
     };
     window.addEventListener("pointerup", handleWindowPointerEnd, { once: true });
     window.addEventListener("pointercancel", handleWindowPointerEnd, {
