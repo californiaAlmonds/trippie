@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { parseSearch, type SearchParams, type TripMode } from "../search.ts";
 import { getClient } from "../store.ts";
+import type { Cabin } from "../types.ts";
 
 export const MAX_PLANS_PER_USER = 20;
 export const MAX_RECENT_PER_USER = 10;
@@ -15,9 +16,11 @@ export interface Plan {
   trip: TripMode;
   minGap: number;
   maxGap: number;
+  cabin: Cabin;
   alertEnabled: boolean;
   targetPrice: number | null;
   lastAlertPrice: number | null;
+  lastSeenPrice: number | null;
   expired: boolean;
   createdAt: string;
 }
@@ -50,9 +53,11 @@ function rowToPlan(row: Record<string, unknown>, now = new Date()): Plan {
     trip: String(row.trip) as TripMode,
     minGap: Number(row.min_gap),
     maxGap: Number(row.max_gap),
+    cabin: row.cabin === "business" ? "business" : "economy",
     alertEnabled: Number(row.alert_enabled) === 1,
     targetPrice: row.target_price == null ? null : Number(row.target_price),
     lastAlertPrice: row.last_alert_price == null ? null : Number(row.last_alert_price),
+    lastSeenPrice: row.last_seen_price == null ? null : Number(row.last_seen_price),
     expired: isMonthExpired(month, now),
     createdAt: String(row.created_at),
   };
@@ -66,6 +71,9 @@ export function parseSearchBody(body: Record<string, unknown>): SearchParams | {
   if (typeof body.month === "string") sp.set("month", body.month);
   if (body.trip !== undefined) {
     sp.set("trip", typeof body.trip === "string" ? body.trip : "");
+  }
+  if (body.cabin !== undefined) {
+    sp.set("cabin", typeof body.cabin === "string" ? body.cabin : "");
   }
   if (body.minGap !== undefined && body.minGap !== null) {
     sp.set(
@@ -110,8 +118,8 @@ export type PlanMutationResult =
 export async function listPlans(userId: string, now = new Date()): Promise<Plan[]> {
   const client = await getClient();
   const rs = await client.execute({
-    sql: `SELECT id, origin, destination, month, trip, min_gap, max_gap,
-                 alert_enabled, target_price, last_alert_price, created_at
+    sql: `SELECT id, origin, destination, month, trip, min_gap, max_gap, cabin,
+                 alert_enabled, target_price, last_alert_price, last_seen_price, created_at
           FROM plans
           WHERE user_id = ?
           ORDER BY created_at DESC, rowid DESC`,
@@ -186,9 +194,9 @@ export async function createPlan(
 
     await tx.execute({
       sql: `INSERT INTO plans (
-              id, user_id, origin, destination, month, trip, min_gap, max_gap,
-              alert_enabled, target_price, last_alert_price, last_alert_at, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)`,
+              id, user_id, origin, destination, month, trip, min_gap, max_gap, cabin,
+              alert_enabled, target_price, last_alert_price, last_seen_price, last_alert_at, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)`,
       args: [
         id,
         userId,
@@ -198,6 +206,7 @@ export async function createPlan(
         parsed.trip,
         parsed.minGap,
         parsed.maxGap,
+        parsed.cabin,
         alertEnabled ? 1 : 0,
         targetRes.value,
         createdAt,
@@ -227,9 +236,11 @@ export async function createPlan(
       trip: parsed.trip,
       minGap: parsed.minGap,
       maxGap: parsed.maxGap,
+      cabin: parsed.cabin,
       alertEnabled,
       targetPrice: targetRes.value,
       lastAlertPrice: null,
+      lastSeenPrice: null,
       expired: isMonthExpired(parsed.month, nowDate),
       createdAt,
     },
@@ -243,7 +254,7 @@ const PATCH_COLUMNS = {
 
 /**
  * Updates `alertEnabled` and/or `targetPrice` on a plan owned by `userId`.
- * Resets `last_alert_price = NULL` and `last_alert_at = NULL`, and increments `revision`.
+ * Resets `last_alert_price = NULL`, `last_seen_price = NULL`, and `last_alert_at = NULL`, and increments `revision`.
  */
 export async function updatePlan(
   userId: string,
@@ -287,7 +298,12 @@ export async function updatePlan(
     setClauses.push(`${PATCH_COLUMNS.targetPrice} = ?`);
     args.push(validatedTarget);
   }
-  setClauses.push("last_alert_price = NULL", "last_alert_at = NULL", "revision = revision + 1");
+  setClauses.push(
+    "last_alert_price = NULL",
+    "last_seen_price = NULL",
+    "last_alert_at = NULL",
+    "revision = revision + 1",
+  );
   args.push(planId, userId);
 
   const client = await getClient();
@@ -295,8 +311,8 @@ export async function updatePlan(
     sql: `UPDATE plans
           SET ${setClauses.join(", ")}
           WHERE id = ? AND user_id = ?
-          RETURNING id, origin, destination, month, trip, min_gap, max_gap,
-                    alert_enabled, target_price, last_alert_price, created_at`,
+          RETURNING id, origin, destination, month, trip, min_gap, max_gap, cabin,
+                    alert_enabled, target_price, last_alert_price, last_seen_price, created_at`,
     args,
   });
   const updated = updatedRs.rows[0];
@@ -376,10 +392,10 @@ export async function upsertRecentSearch(
     [
       {
         sql: `INSERT INTO recent_searches (
-                user_id, origin, destination, month, trip, min_gap, max_gap, created_at
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                user_id, origin, destination, month, trip, min_gap, max_gap, cabin, created_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
               ON CONFLICT(user_id, origin, destination, month, trip, min_gap, max_gap)
-              DO UPDATE SET created_at = excluded.created_at`,
+              DO UPDATE SET cabin = excluded.cabin, created_at = excluded.created_at`,
         args: [
           userId,
           parsed.origin,
@@ -388,6 +404,7 @@ export async function upsertRecentSearch(
           parsed.trip,
           parsed.minGap,
           parsed.maxGap,
+          parsed.cabin,
           createdAt,
         ],
       },

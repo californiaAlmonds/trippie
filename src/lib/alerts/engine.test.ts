@@ -139,7 +139,7 @@ test("alerts engine: dry run changes no state, live run claims/sends/updates onl
     // (h) Verify email HTML escapes dynamic values (<script> in airline name) and includes List-Unsubscribe on https
     assert.equal(sentEmails.length, 1);
     const email = sentEmails[0]!;
-    assert.match(email.subject, /Trippie: BLR → IXZ from ₹10,500 in February 2027/);
+    assert.match(email.subject, /Trippie: Below your limit: BLR → IXZ from ₹10,500 \(limit ₹12,000\) in February 2027/);
     assert.ok(!email.html.includes("<script>"));
     assert.ok(email.html.includes("&lt;script&gt;alert(1)&lt;/script&gt;"));
     assert.ok(email.headers?.["List-Unsubscribe"]?.startsWith("<https://trippie.example.com/unsubscribe?token="));
@@ -423,7 +423,7 @@ test("alerts engine deterministic interleaving: beforeClaim guards against disab
     const raiseTarget = await updatePlan(user.id, true, planId, { targetPrice: 12000 }, NOW);
     assert.ok(raiseTarget.ok);
 
-    // (4) PATCH (target change) while a send is in flight => ledger row is 'sent' but last_alert_price stays NULL
+    // (4) PATCH (target change) while a send is in flight => ledger row is 'sent' but last_alert_price and last_seen_price stay NULL
     const sent3: SendMailInput[] = [];
     const summary3 = await runAlerts({
       now: NOW,
@@ -433,7 +433,7 @@ test("alerts engine deterministic interleaving: beforeClaim guards against disab
         beforeComplete: async (p) => {
           // Simulate a pre-existing baseline that the concurrent PATCH resets to NULL while bumping revision
           await client.execute({
-            sql: "UPDATE plans SET last_alert_price = 11500, last_alert_at = '2026-10-15T00:00:00.000Z' WHERE id = ?",
+            sql: "UPDATE plans SET last_alert_price = 11500, last_seen_price = 11500, last_alert_at = '2026-10-15T00:00:00.000Z' WHERE id = ?",
             args: [p.id],
           });
           const r = await updatePlan(user.id, true, p.id, { targetPrice: 11000 }, NOW);
@@ -454,11 +454,12 @@ test("alerts engine deterministic interleaving: beforeClaim guards against disab
     assert.equal(String(deliv3.rows[0]?.status), "sent");
 
     const planRowAfter = await client.execute({
-      sql: "SELECT target_price, last_alert_price, last_alert_at FROM plans WHERE id = ?",
+      sql: "SELECT target_price, last_alert_price, last_seen_price, last_alert_at FROM plans WHERE id = ?",
       args: [planId],
     });
     assert.equal(Number(planRowAfter.rows[0]?.target_price), 11000);
     assert.equal(planRowAfter.rows[0]?.last_alert_price, null);
+    assert.equal(planRowAfter.rows[0]?.last_seen_price, null);
     assert.equal(planRowAfter.rows[0]?.last_alert_at, null);
 
     client.close();
@@ -745,8 +746,14 @@ test("alerts engine multi-channel: push-only delivery, no-channel skip before cl
     // Verify push payload formatting and relative URL fallback when APP_ORIGIN is unset
     assert.equal(pushesSent.length, 1);
     assert.equal(pushesSent[0]!.token, validToken);
-    assert.equal(pushesSent[0]!.payload.title, "BLR → IXZ from ₹23,159");
-    assert.equal(pushesSent[0]!.payload.body, "February 2027 · best 2027-02-01 – 2027-02-06");
+    assert.equal(
+      pushesSent[0]!.payload.title,
+      "Below your limit: BLR → IXZ from ₹23,159 (limit ₹25,000)",
+    );
+    assert.equal(
+      pushesSent[0]!.payload.body,
+      "February 2027 · best 2027-02-01 – 2027-02-06 (₹23,159)",
+    );
     assert.equal(
       pushesSent[0]!.payload.url,
       "/?origin=BLR&destination=IXZ&month=2027-02&trip=round&minGap=5&maxGap=7",
@@ -760,6 +767,7 @@ test("alerts engine multi-channel: push-only delivery, no-channel skip before cl
     });
     assert.equal(String(pushLedger.rows[0]?.status), "sent");
     assert.equal((await listPlans(userWithDevices.id, NOW))[0]?.lastAlertPrice, 23159);
+    assert.equal((await listPlans(userWithDevices.id, NOW))[0]?.lastSeenPrice, 23159);
 
     // Disable second plan now that (b) no-channel skip is verified
     await updatePlan(userNoDevices.id, true, planNoChannelId, { alertEnabled: false }, NOW);
@@ -792,6 +800,7 @@ test("alerts engine multi-channel: push-only delivery, no-channel skip before cl
       "https://trippie-mu.vercel.app/?origin=BLR&destination=IXZ&month=2027-02&trip=round&minGap=5&maxGap=7",
     );
     assert.equal((await listPlans(userWithDevices.id, day2Now))[0]?.lastAlertPrice, 21000);
+    assert.equal((await listPlans(userWithDevices.id, day2Now))[0]?.lastSeenPrice, 21000);
 
     // (c2) Day 3, price drops to 19000 (9000 + 10000); both email and push fail ('error') => 'failed', baseline stays 21000, device NOT deleted
     const day3Now = new Date("2026-10-18T08:00:00.000Z");
@@ -815,6 +824,7 @@ test("alerts engine multi-channel: push-only delivery, no-channel skip before cl
     assert.equal(bothFailSummary.push_sent, 0);
     assert.equal(bothFailSummary.invalid_tokens_removed, 0);
     assert.equal((await listPlans(userWithDevices.id, day3Now))[0]?.lastAlertPrice, 21000);
+    assert.equal((await listPlans(userWithDevices.id, day3Now))[0]?.lastSeenPrice, 19000);
     assert.deepEqual(await listUserDeviceTokens(userWithDevices.id), [validToken]);
 
     const day3Ledger = await client.execute({
@@ -831,6 +841,440 @@ test("alerts engine multi-channel: push-only delivery, no-channel skip before cl
     if (prevSecret !== undefined) process.env.APP_SECRET = prevSecret;
     if (prevOrigin !== undefined) process.env.APP_ORIGIN = prevOrigin;
     if (prevFcm !== undefined) process.env.FCM_SERVICE_ACCOUNT = prevFcm;
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // Windows SQLite file handle may release asynchronously on process exit
+    }
+  }
+});
+
+test("alerts engine no-limit mode: first run sets baseline silently, drop >= max(300, 3%) sends once, small drop doesn't, rise updates baseline silently, and daily cap holds", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "trippie-alerts-nolimit-"));
+  const dbPath = join(dir, "nolimit.db").replace(/\\/g, "/");
+  const prevUrl = process.env.TURSO_DATABASE_URL;
+  process.env.TURSO_DATABASE_URL = `file:${dbPath}`;
+
+  try {
+    const client = await getClient();
+    const userRes = await createUser("nolimit@example.com", "scrypt$hash", { verified: true });
+    assert.ok(userRes.ok);
+    const user = userRes.user;
+
+    const planRes = await createPlan(
+      user.id,
+      true,
+      {
+        origin: "BLR",
+        destination: "IXZ",
+        month: "2027-02",
+        trip: "oneway",
+        alertEnabled: true,
+        targetPrice: null,
+      },
+      NOW,
+    );
+    assert.ok(planRes.ok);
+    assert.equal(planRes.plan.targetPrice, null);
+    assert.equal(planRes.plan.lastSeenPrice, null);
+
+    const { first, last } = monthBounds("2027-02");
+    const sentEmails: SendMailInput[] = [];
+    const sendMail = async (msg: SendMailInput) => {
+      sentEmails.push(msg);
+    };
+
+    // Day 1, run 1: B = 20000, last_seen_price IS NULL -> stores B as last_seen_price, sends nothing
+    await saveFares(buildMonthFares("BLR", "IXZ", first, last, "2026-10-16", 20000));
+    const r1 = await runAlerts({
+      now: new Date("2026-10-16T08:00:00.000Z"),
+      appSecret: TEST_SECRET,
+      appOrigin: "https://trippie.example.com",
+      sendMail,
+    });
+    assert.equal(r1.sent, 0);
+    assert.equal(r1.skipped["baseline set"], 1);
+    assert.equal(sentEmails.length, 0);
+    let p = (await listPlans(user.id, NOW))[0]!;
+    assert.equal(p.lastSeenPrice, 20000);
+    assert.equal(p.lastAlertPrice, null);
+
+    // Day 1, run 2: small drop from 20000 to 19500 (drop = 500 < max(300, round(20000*0.03)) = 600) -> does NOT send, updates baseline to 19500
+    await saveFares(buildMonthFares("BLR", "IXZ", first, last, "2026-10-16", 19500));
+    const r2 = await runAlerts({
+      now: new Date("2026-10-16T12:00:00.000Z"),
+      appSecret: TEST_SECRET,
+      appOrigin: "https://trippie.example.com",
+      sendMail,
+    });
+    assert.equal(r2.sent, 0);
+    assert.equal(r2.skipped["no price drop"], 1);
+    assert.equal(sentEmails.length, 0);
+    p = (await listPlans(user.id, NOW))[0]!;
+    assert.equal(p.lastSeenPrice, 19500);
+    assert.equal(p.lastAlertPrice, null);
+
+    // Day 1, run 3: drop from 19500 to 18915 (drop = 585 == round(19500 * 0.03) = 585 >= 300) -> sends once!
+    await saveFares(buildMonthFares("BLR", "IXZ", first, last, "2026-10-16", 18915));
+    const r3 = await runAlerts({
+      now: new Date("2026-10-16T16:00:00.000Z"),
+      appSecret: TEST_SECRET,
+      appOrigin: "https://trippie.example.com",
+      sendMail,
+    });
+    assert.equal(r3.sent, 1);
+    assert.equal(sentEmails.length, 1);
+    assert.match(
+      sentEmails[0]!.subject,
+      /Trippie: Price dropped: BLR → IXZ now from ₹18,915 \(was ₹19,500\) in February 2027/,
+    );
+    p = (await listPlans(user.id, NOW))[0]!;
+    assert.equal(p.lastSeenPrice, 18915);
+    assert.equal(p.lastAlertPrice, 18915);
+
+    // Day 1, run 4: another big drop same UTC day to 15000 -> blocked by daily claim (max one alert per plan per UTC day), still updates last_seen_price to 15000
+    await saveFares(buildMonthFares("BLR", "IXZ", first, last, "2026-10-16", 15000));
+    const r4 = await runAlerts({
+      now: new Date("2026-10-16T20:00:00.000Z"),
+      appSecret: TEST_SECRET,
+      appOrigin: "https://trippie.example.com",
+      sendMail,
+    });
+    assert.equal(r4.sent, 0);
+    assert.equal(r4.skipped["already claimed"], 1);
+    assert.equal(sentEmails.length, 1);
+    p = (await listPlans(user.id, NOW))[0]!;
+    assert.equal(p.lastSeenPrice, 15000);
+    assert.equal(p.lastAlertPrice, 18915);
+
+    // Day 2, run 1: price rises to 22000 -> updates baseline silently to 22000, sends nothing
+    await saveFares(buildMonthFares("BLR", "IXZ", first, last, "2026-10-17", 22000));
+    const r5 = await runAlerts({
+      now: new Date("2026-10-17T08:00:00.000Z"),
+      appSecret: TEST_SECRET,
+      appOrigin: "https://trippie.example.com",
+      sendMail,
+    });
+    assert.equal(r5.sent, 0);
+    assert.equal(r5.skipped["no price drop"], 1);
+    assert.equal(sentEmails.length, 1);
+    p = (await listPlans(user.id, NOW))[0]!;
+    assert.equal(p.lastSeenPrice, 22000);
+    assert.equal(p.lastAlertPrice, 18915);
+
+    // Day 2, run 2: drops from 22000 to 21000 (drop = 1000 >= 660, even though 21000 > previous lastAlertPrice 18915!) -> sends because drop is measured from most recent last_seen_price
+    await saveFares(buildMonthFares("BLR", "IXZ", first, last, "2026-10-17", 21000));
+    const r6 = await runAlerts({
+      now: new Date("2026-10-17T12:00:00.000Z"),
+      appSecret: TEST_SECRET,
+      appOrigin: "https://trippie.example.com",
+      sendMail,
+    });
+    assert.equal(r6.sent, 1);
+    assert.equal(sentEmails.length, 2);
+    assert.match(
+      sentEmails[1]!.subject,
+      /Trippie: Price dropped: BLR → IXZ now from ₹21,000 \(was ₹22,000\) in February 2027/,
+    );
+    p = (await listPlans(user.id, NOW))[0]!;
+    assert.equal(p.lastSeenPrice, 21000);
+    assert.equal(p.lastAlertPrice, 21000);
+
+    // Day 3: test 300 INR floor when 3% < 300 (e.g. baseline 5000, 3% = 150, max(300, 150) = 300)
+    await saveFares(buildMonthFares("BLR", "IXZ", first, last, "2026-10-18", 5000));
+    // Force last_seen_price to 5000 via DB for clean floor test
+    await client.execute({
+      sql: "UPDATE plans SET last_seen_price = 5000 WHERE id = ?",
+      args: [planRes.plan.id],
+    });
+    // Drop of 250 (to 4750) -> does NOT send (250 < 300)
+    await saveFares(buildMonthFares("BLR", "IXZ", first, last, "2026-10-18", 4750));
+    const r7 = await runAlerts({
+      now: new Date("2026-10-18T08:00:00.000Z"),
+      appSecret: TEST_SECRET,
+      appOrigin: "https://trippie.example.com",
+      sendMail,
+    });
+    assert.equal(r7.sent, 0);
+    assert.equal(r7.skipped["no price drop"], 1);
+    p = (await listPlans(user.id, NOW))[0]!;
+    assert.equal(p.lastSeenPrice, 4750);
+
+    // Drop of 300 (from 4750 to 4450) -> sends!
+    await saveFares(buildMonthFares("BLR", "IXZ", first, last, "2026-10-18", 4450));
+    const r8 = await runAlerts({
+      now: new Date("2026-10-18T12:00:00.000Z"),
+      appSecret: TEST_SECRET,
+      appOrigin: "https://trippie.example.com",
+      sendMail,
+    });
+    assert.equal(r8.sent, 1);
+    assert.equal(sentEmails.length, 3);
+    assert.match(
+      sentEmails[2]!.subject,
+      /Trippie: Price dropped: BLR → IXZ now from ₹4,450 \(was ₹4,750\) in February 2027/,
+    );
+
+    client.close();
+  } finally {
+    if (prevUrl === undefined) delete process.env.TURSO_DATABASE_URL;
+    else process.env.TURSO_DATABASE_URL = prevUrl;
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // Windows SQLite file handle may release asynchronously on process exit
+    }
+  }
+});
+
+test("alerts engine limit mode: below limit sends once, staying below at same/higher price doesn't resend, dropping further sends next day, rising above limit re-arms, and next dip below sends", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "trippie-alerts-limit-rearm-"));
+  const dbPath = join(dir, "limit-rearm.db").replace(/\\/g, "/");
+  const prevUrl = process.env.TURSO_DATABASE_URL;
+  process.env.TURSO_DATABASE_URL = `file:${dbPath}`;
+
+  try {
+    const client = await getClient();
+    const userRes = await createUser("limituser@example.com", "scrypt$hash", { verified: true });
+    assert.ok(userRes.ok);
+    const user = userRes.user;
+
+    const planRes = await createPlan(
+      user.id,
+      true,
+      {
+        origin: "BLR",
+        destination: "IXZ",
+        month: "2027-02",
+        trip: "oneway",
+        alertEnabled: true,
+        targetPrice: 10000,
+      },
+      NOW,
+    );
+    assert.ok(planRes.ok);
+
+    const { first, last } = monthBounds("2027-02");
+    const sentEmails: SendMailInput[] = [];
+    const sendMail = async (msg: SendMailInput) => {
+      sentEmails.push(msg);
+    };
+
+    // Day 1: B = 9500 <= 10000 -> sends once, sets lastAlertPrice = 9500, lastSeenPrice = 9500
+    await saveFares(buildMonthFares("BLR", "IXZ", first, last, "2026-10-16", 9500));
+    const d1 = await runAlerts({
+      now: new Date("2026-10-16T08:00:00.000Z"),
+      appSecret: TEST_SECRET,
+      appOrigin: "https://trippie.example.com",
+      sendMail,
+    });
+    assert.equal(d1.sent, 1);
+    assert.equal(sentEmails.length, 1);
+    assert.match(
+      sentEmails[0]!.subject,
+      /Trippie: Below your limit: BLR → IXZ from ₹9,500 \(limit ₹10,000\) in February 2027/,
+    );
+    let p = (await listPlans(user.id, NOW))[0]!;
+    assert.equal(p.lastAlertPrice, 9500);
+    assert.equal(p.lastSeenPrice, 9500);
+
+    // Day 2: staying below limit at same price (9500) or slightly higher (9800 <= 10000) -> does NOT resend, updates lastSeenPrice
+    await saveFares(buildMonthFares("BLR", "IXZ", first, last, "2026-10-17", 9800));
+    const d2 = await runAlerts({
+      now: new Date("2026-10-17T08:00:00.000Z"),
+      appSecret: TEST_SECRET,
+      appOrigin: "https://trippie.example.com",
+      sendMail,
+    });
+    assert.equal(d2.sent, 0);
+    assert.equal(d2.skipped["no price drop"], 1);
+    p = (await listPlans(user.id, NOW))[0]!;
+    assert.equal(p.lastAlertPrice, 9500);
+    assert.equal(p.lastSeenPrice, 9800);
+
+    // Day 3: dropping further below lastAlertPrice (9200 < 9500) -> sends again!
+    await saveFares(buildMonthFares("BLR", "IXZ", first, last, "2026-10-18", 9200));
+    const d3 = await runAlerts({
+      now: new Date("2026-10-18T08:00:00.000Z"),
+      appSecret: TEST_SECRET,
+      appOrigin: "https://trippie.example.com",
+      sendMail,
+    });
+    assert.equal(d3.sent, 1);
+    assert.equal(sentEmails.length, 2);
+    p = (await listPlans(user.id, NOW))[0]!;
+    assert.equal(p.lastAlertPrice, 9200);
+    assert.equal(p.lastSeenPrice, 9200);
+
+    // Day 4: rising above the limit (11500 > 10000) -> re-arms by setting lastAlertPrice = NULL and lastSeenPrice = 11500
+    await saveFares(buildMonthFares("BLR", "IXZ", first, last, "2026-10-19", 11500));
+    const d4 = await runAlerts({
+      now: new Date("2026-10-19T08:00:00.000Z"),
+      appSecret: TEST_SECRET,
+      appOrigin: "https://trippie.example.com",
+      sendMail,
+    });
+    assert.equal(d4.sent, 0);
+    assert.equal(d4.skipped["above target"], 1);
+    p = (await listPlans(user.id, NOW))[0]!;
+    assert.equal(p.lastAlertPrice, null);
+    assert.equal(p.lastSeenPrice, 11500);
+
+    // Day 5: next dip below the limit (9900 <= 10000, even though 9900 > previous 9200) -> sends because re-armed!
+    await saveFares(buildMonthFares("BLR", "IXZ", first, last, "2026-10-20", 9900));
+    const d5 = await runAlerts({
+      now: new Date("2026-10-20T08:00:00.000Z"),
+      appSecret: TEST_SECRET,
+      appOrigin: "https://trippie.example.com",
+      sendMail,
+    });
+    assert.equal(d5.sent, 1);
+    assert.equal(sentEmails.length, 3);
+    assert.match(
+      sentEmails[2]!.subject,
+      /Trippie: Below your limit: BLR → IXZ from ₹9,900 \(limit ₹10,000\) in February 2027/,
+    );
+    p = (await listPlans(user.id, NOW))[0]!;
+    assert.equal(p.lastAlertPrice, 9900);
+    assert.equal(p.lastSeenPrice, 9900);
+
+    client.close();
+  } finally {
+    if (prevUrl === undefined) delete process.env.TURSO_DATABASE_URL;
+    else process.env.TURSO_DATABASE_URL = prevUrl;
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // Windows SQLite file handle may release asynchronously on process exit
+    }
+  }
+});
+
+test("alerts engine cabin isolation and per-user currency formatter hook in email and push", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "trippie-alerts-cabin-fmt-"));
+  const dbPath = join(dir, "cabin-fmt.db").replace(/\\/g, "/");
+  const prevUrl = process.env.TURSO_DATABASE_URL;
+  process.env.TURSO_DATABASE_URL = `file:${dbPath}`;
+
+  try {
+    const client = await getClient();
+    const userRes = await createUser("biz@example.com", "scrypt$hash", { verified: true });
+    assert.ok(userRes.ok);
+    const user = userRes.user;
+
+    const deviceToken = "fcm_biz_device_token_123456789012345";
+    await registerDevice(user.id, deviceToken, "android", NOW);
+
+    // Create a business cabin plan with targetPrice = 45000
+    const bizPlanRes = await createPlan(
+      user.id,
+      true,
+      {
+        origin: "BLR",
+        destination: "IXZ",
+        month: "2027-02",
+        trip: "round",
+        minGap: 4,
+        maxGap: 7,
+        cabin: "business",
+        alertEnabled: true,
+        targetPrice: 45000,
+      },
+      NOW,
+    );
+    assert.ok(bizPlanRes.ok);
+    assert.equal(bizPlanRes.plan.cabin, "business");
+
+    const { first, last } = monthBounds("2027-02");
+    // Seed cheap economy fares (5000 + 5000 = 10000) ONLY -> business plan must NOT see economy fares
+    await saveFares([
+      ...buildMonthFares("BLR", "IXZ", first, last, TODAY, 5000),
+      ...buildMonthFares("IXZ", "BLR", addDays(first, 4), addDays(last, 7), TODAY, 5000),
+    ]);
+
+    const rEconOnly = await runAlerts({
+      now: NOW,
+      appSecret: TEST_SECRET,
+      appOrigin: "https://trippie.example.com",
+      sendMail: async () => {},
+    });
+    assert.equal(rEconOnly.considered, 1);
+    assert.equal(rEconOnly.sent, 0);
+    assert.equal(rEconOnly.skipped["insufficient data"], 1);
+
+    // Now seed business fares (20000 outbound + 22000 inbound = 42000 <= 45000)
+    const nowIso = NOW.toISOString();
+    const bizStmts = [
+      ...buildMonthFares("BLR", "IXZ", first, last, TODAY, 20000, "Air India").map((r) => ({
+        sql: `INSERT INTO fares (snapshot_day, origin, destination, travel_date, cabin, price, airline, stops, status, provider, scraped_at)
+              VALUES (?, ?, ?, ?, 'business', ?, ?, ?, 'ok', 'google-flights', ?)`,
+        args: [r.day, r.origin, r.destination, r.date, r.price, r.airline ?? null, r.stops ?? 0, nowIso],
+      })),
+      ...buildMonthFares("IXZ", "BLR", addDays(first, 4), addDays(last, 7), TODAY, 22000, "Air India").map((r) => ({
+        sql: `INSERT INTO fares (snapshot_day, origin, destination, travel_date, cabin, price, airline, stops, status, provider, scraped_at)
+              VALUES (?, ?, ?, ?, 'business', ?, ?, ?, 'ok', 'google-flights', ?)`,
+        args: [r.day, r.origin, r.destination, r.date, r.price, r.airline ?? null, r.stops ?? 0, nowIso],
+      })),
+    ];
+    await client.batch(bizStmts, "write");
+
+    const sentEmails: SendMailInput[] = [];
+    const sentPushes: PushMessageInput[] = [];
+    const requestedUserIds: string[] = [];
+
+    const rBiz = await runAlerts({
+      now: NOW,
+      appSecret: TEST_SECRET,
+      appOrigin: "https://trippie.example.com",
+      getFormatter: async (uid) => {
+        requestedUserIds.push(uid);
+        return (amountInr: number) => `USD ${Math.round(amountInr / 100)}`;
+      },
+      sendMail: async (msg) => {
+        sentEmails.push(msg);
+      },
+      sendPush: async (_token, payload) => {
+        sentPushes.push(payload);
+        return "ok";
+      },
+    });
+
+    assert.equal(rBiz.sent, 1);
+    assert.equal(rBiz.email_sent, 1);
+    assert.equal(rBiz.push_sent, 1);
+    assert.deepEqual(requestedUserIds, [user.id]);
+
+    // Verify email subject, text, and html use the custom formatter ("USD 420", "USD 450", "USD 200", "USD 220") and include "Business"
+    const email = sentEmails[0]!;
+    assert.equal(
+      email.subject,
+      "Trippie: Below your limit: BLR → IXZ (Business) from USD 420 (limit USD 450) in February 2027",
+    );
+    assert.ok(email.text.includes("Below your limit: BLR → IXZ (Business) from USD 420 (limit USD 450)"));
+    assert.ok(email.text.includes("Best price found: USD 420"));
+    assert.ok(email.text.includes("USD 420 (out USD 200, back USD 220)"));
+    assert.ok(email.html.includes("Below your limit: BLR → IXZ (Business) from USD 420 (limit USD 450)"));
+    assert.ok(email.html.includes("<strong>USD 420</strong> (USD 200 + USD 220)"));
+
+    // Verify push title, body, and URL use the custom formatter and include Business
+    const push = sentPushes[0]!;
+    assert.equal(
+      push.title,
+      "Below your limit: BLR → IXZ (Business) from USD 420 (limit USD 450)",
+    );
+    assert.equal(
+      push.body,
+      "Business · February 2027 · best 2027-02-01 – 2027-02-05 (USD 420)",
+    );
+    assert.equal(
+      push.url,
+      "https://trippie.example.com/?origin=BLR&destination=IXZ&month=2027-02&trip=round&minGap=4&maxGap=7&cabin=business",
+    );
+
+    client.close();
+  } finally {
+    if (prevUrl === undefined) delete process.env.TURSO_DATABASE_URL;
+    else process.env.TURSO_DATABASE_URL = prevUrl;
     try {
       rmSync(dir, { recursive: true, force: true });
     } catch {

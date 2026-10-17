@@ -92,16 +92,20 @@ test("plans CRUD scoping, 20-plan cap, duplicate rejection, unverified alertEnab
       trip: "round",
       minGap: 4,
       maxGap: 7,
+      cabin: "business",
       alertEnabled: true,
       targetPrice: 15000,
     });
     assert.equal(planA1.ok, true);
     if (!planA1.ok) throw new Error("expected planA1 creation");
+    assert.equal(planA1.plan.cabin, "business");
     assert.equal(planA1.plan.alertEnabled, true);
     assert.equal(planA1.plan.targetPrice, 15000);
+    assert.equal(planA1.plan.lastAlertPrice, null);
+    assert.equal(planA1.plan.lastSeenPrice, null);
     assert.equal(planA1.plan.expired, false);
 
-    // Duplicate plan is rejected with 409
+    // Duplicate plan is rejected with 409 (even with a different cabin, since UNIQUE excludes cabin)
     const dupA1 = await createPlan(userA.id, userA.verified, {
       origin: "blr",
       destination: "ixz",
@@ -109,6 +113,7 @@ test("plans CRUD scoping, 20-plan cap, duplicate rejection, unverified alertEnab
       trip: "round",
       minGap: 4,
       maxGap: 7,
+      cabin: "economy",
     });
     assert.deepEqual(dupA1, {
       ok: false,
@@ -128,27 +133,32 @@ test("plans CRUD scoping, 20-plan cap, duplicate rejection, unverified alertEnab
     });
     assert.equal(await deletePlan(userB.id, planA1.plan.id), false);
 
-    // Seed last_alert_price and last_alert_at on planA1, then verify PATCH resets both to NULL
+    // Seed last_alert_price, last_seen_price, and last_alert_at on planA1, then verify PATCH resets all to NULL
     await client.execute({
-      sql: "UPDATE plans SET last_alert_price = 12345, last_alert_at = '2026-10-16T00:00:00.000Z' WHERE id = ?",
+      sql: "UPDATE plans SET last_alert_price = 12345, last_seen_price = 12800, last_alert_at = '2026-10-16T00:00:00.000Z' WHERE id = ?",
       args: [planA1.plan.id],
     });
     const beforePatch = await listPlans(userA.id);
+    assert.equal(beforePatch[0]?.cabin, "business");
     assert.equal(beforePatch[0]?.lastAlertPrice, 12345);
+    assert.equal(beforePatch[0]?.lastSeenPrice, 12800);
 
     const patched = await updatePlan(userA.id, userA.verified, planA1.plan.id, {
       targetPrice: 14000,
     });
     assert.equal(patched.ok, true);
     if (!patched.ok) throw new Error("expected patch success");
+    assert.equal(patched.plan.cabin, "business");
     assert.equal(patched.plan.targetPrice, 14000);
     assert.equal(patched.plan.lastAlertPrice, null);
+    assert.equal(patched.plan.lastSeenPrice, null);
 
     const dbRowAfterPatch = await client.execute({
-      sql: "SELECT last_alert_price, last_alert_at FROM plans WHERE id = ?",
+      sql: "SELECT last_alert_price, last_seen_price, last_alert_at FROM plans WHERE id = ?",
       args: [planA1.plan.id],
     });
     assert.equal(dbRowAfterPatch.rows[0]?.last_alert_price, null);
+    assert.equal(dbRowAfterPatch.rows[0]?.last_seen_price, null);
     assert.equal(dbRowAfterPatch.rows[0]?.last_alert_at, null);
 
     // Cap of 20 plans per user: userA already has 1 plan, create 19 more -> 20 total
@@ -162,6 +172,7 @@ test("plans CRUD scoping, 20-plan cap, duplicate rejection, unverified alertEnab
         maxGap: gap + 1,
       });
       assert.equal(res.ok, true);
+      if (res.ok) assert.equal(res.plan.cabin, "economy");
     }
     const allA = await listPlans(userA.id);
     assert.equal(allA.length, 20);
@@ -307,7 +318,7 @@ test("recent searches upsert, cap-10 pruning, and clear; account deletion remove
   }
 });
 
-test("partial PATCH never clobbers unspecified fields, increments revision on every PATCH, and resets last_alert_price/last_alert_at", async () => {
+test("partial PATCH never clobbers unspecified fields, increments revision on every PATCH, and resets last_alert_price/last_seen_price/last_alert_at", async () => {
   const dir = mkdtempSync(join(tmpdir(), "trippie-plans-patch-"));
   const dbPath = join(dir, "patch.db").replace(/\\/g, "/");
   const prevUrl = process.env.TURSO_DATABASE_URL;
@@ -348,7 +359,7 @@ test("partial PATCH never clobbers unspecified fields, increments revision on ev
 
     // Seed baseline before first PATCH
     await client.execute({
-      sql: "UPDATE plans SET last_alert_price = 11000, last_alert_at = '2026-10-16T01:00:00.000Z' WHERE id = ?",
+      sql: "UPDATE plans SET last_alert_price = 11000, last_seen_price = 11200, last_alert_at = '2026-10-16T01:00:00.000Z' WHERE id = ?",
       args: [planId],
     });
 
@@ -360,20 +371,22 @@ test("partial PATCH never clobbers unspecified fields, increments revision on ev
     assert.equal(patchDisable.plan.alertEnabled, false);
     assert.equal(patchDisable.plan.targetPrice, 15000);
     assert.equal(patchDisable.plan.lastAlertPrice, null);
+    assert.equal(patchDisable.plan.lastSeenPrice, null);
 
     const rowAfter1 = await client.execute({
-      sql: "SELECT revision, alert_enabled, target_price, last_alert_price, last_alert_at FROM plans WHERE id = ?",
+      sql: "SELECT revision, alert_enabled, target_price, last_alert_price, last_seen_price, last_alert_at FROM plans WHERE id = ?",
       args: [planId],
     });
     assert.equal(Number(rowAfter1.rows[0]?.revision), 1);
     assert.equal(Number(rowAfter1.rows[0]?.alert_enabled), 0);
     assert.equal(Number(rowAfter1.rows[0]?.target_price), 15000);
     assert.equal(rowAfter1.rows[0]?.last_alert_price, null);
+    assert.equal(rowAfter1.rows[0]?.last_seen_price, null);
     assert.equal(rowAfter1.rows[0]?.last_alert_at, null);
 
     // Seed baseline again before second PATCH
     await client.execute({
-      sql: "UPDATE plans SET last_alert_price = 10500, last_alert_at = '2026-10-16T02:00:00.000Z' WHERE id = ?",
+      sql: "UPDATE plans SET last_alert_price = 10500, last_seen_price = 10600, last_alert_at = '2026-10-16T02:00:00.000Z' WHERE id = ?",
       args: [planId],
     });
 
@@ -385,15 +398,17 @@ test("partial PATCH never clobbers unspecified fields, increments revision on ev
     assert.equal(patchTargetOnly.plan.alertEnabled, false);
     assert.equal(patchTargetOnly.plan.targetPrice, 13500);
     assert.equal(patchTargetOnly.plan.lastAlertPrice, null);
+    assert.equal(patchTargetOnly.plan.lastSeenPrice, null);
 
     const rowAfter2 = await client.execute({
-      sql: "SELECT revision, alert_enabled, target_price, last_alert_price, last_alert_at FROM plans WHERE id = ?",
+      sql: "SELECT revision, alert_enabled, target_price, last_alert_price, last_seen_price, last_alert_at FROM plans WHERE id = ?",
       args: [planId],
     });
     assert.equal(Number(rowAfter2.rows[0]?.revision), 2);
     assert.equal(Number(rowAfter2.rows[0]?.alert_enabled), 0);
     assert.equal(Number(rowAfter2.rows[0]?.target_price), 13500);
     assert.equal(rowAfter2.rows[0]?.last_alert_price, null);
+    assert.equal(rowAfter2.rows[0]?.last_seen_price, null);
     assert.equal(rowAfter2.rows[0]?.last_alert_at, null);
 
     // PATCH 3: alertEnabled-only PATCH -> target_price must stay 13500, revision -> 3
@@ -412,13 +427,14 @@ test("partial PATCH never clobbers unspecified fields, increments revision on ev
     assert.ok(concurrentTarget.ok && concurrentDisable.ok);
 
     const finalRow = await client.execute({
-      sql: "SELECT revision, alert_enabled, target_price, last_alert_price, last_alert_at FROM plans WHERE id = ?",
+      sql: "SELECT revision, alert_enabled, target_price, last_alert_price, last_seen_price, last_alert_at FROM plans WHERE id = ?",
       args: [planId],
     });
     assert.equal(Number(finalRow.rows[0]?.revision), 5);
     assert.equal(Number(finalRow.rows[0]?.alert_enabled), 0);
     assert.equal(Number(finalRow.rows[0]?.target_price), 12000);
     assert.equal(finalRow.rows[0]?.last_alert_price, null);
+    assert.equal(finalRow.rows[0]?.last_seen_price, null);
     assert.equal(finalRow.rows[0]?.last_alert_at, null);
 
     client.close();
