@@ -1,12 +1,25 @@
+"use client";
+
 import { orderedSites, SITES } from "@/lib/links";
-import type { DayFare, TripWindow } from "@/lib/types";
-import { fmtDate, inr } from "./format";
+import type { Cabin, DayFare, TripWindow } from "@/lib/types";
+import { useCurrency } from "./currency/CurrencyProvider";
+import {
+  buildBookingUrl,
+  ESTIMATE_TOOLTIP,
+  fmtDate,
+  formatDuration,
+  formatFlightTimes,
+  formatRelativeChecked,
+  formatStops,
+} from "./format";
 import { ExternalLinkIcon } from "./icons";
 
 interface BookingPanelProps {
   window: TripWindow;
   origin: string;
   destination: string;
+  cabin?: Cabin;
+  lastCheckedAt?: string | null;
 }
 
 function sourceLabel(key: string): string {
@@ -17,12 +30,18 @@ export default function BookingPanel({
   window: w,
   origin,
   destination,
+  cabin = "economy",
+  lastCheckedAt,
 }: BookingPanelProps) {
+  const { currency, format } = useCurrency();
   const preferredSource =
     w.depart.source === w.ret.source ? w.depart.source : undefined;
   const [best, ...others] = orderedSites(preferredSource);
   const link = (s: typeof best) =>
-    s.url(origin, destination, w.depart.date, w.ret.date);
+    buildBookingUrl(s, origin, destination, w.depart.date, w.ret.date, {
+      currency,
+      cabin,
+    });
 
   const airlines = Array.from(
     new Set([w.depart.airline, w.ret.airline].filter(Boolean)),
@@ -41,6 +60,7 @@ export default function BookingPanel({
         </h2>
         <span className="text-xs font-medium text-[var(--text-secondary)]">
           {origin} → {destination}
+          {cabin === "business" ? " · Business" : ""}
         </span>
       </div>
 
@@ -57,7 +77,7 @@ export default function BookingPanel({
               Best price
             </div>
             <div className="mt-0.5 text-2xl sm:text-3xl font-semibold tabular-nums tracking-tight text-white">
-              {inr.format(w.total)}
+              {format(w.total)}
             </div>
             <div className="mt-1 text-sm font-medium text-white/95">
               on {best.label}
@@ -74,27 +94,69 @@ export default function BookingPanel({
       </a>
 
       {/* Per-leg breakdown */}
-      <ul className="grid gap-1.5 text-xs text-[var(--text-secondary)]">
-        {legs.map(({ label, leg }) => (
-          <li
-            key={label}
-            className="glass-subtle flex items-center justify-between gap-2 rounded-xl px-3.5 py-2"
-          >
-            <span>
-              <strong className="font-semibold text-[var(--text-primary)]">
-                {label}
-              </strong>{" "}
-              <span className="tabular-nums font-medium">
-                {inr.format(leg.price)}
-              </span>{" "}
-              via {sourceLabel(leg.source)}
-              {leg.airline ? `, ${leg.airline}` : ""}
-            </span>
-            <span className="text-[11px] text-[var(--text-muted)] shrink-0">
-              {fmtDate(leg.date)}
-            </span>
-          </li>
-        ))}
+      <ul className="grid gap-2 text-xs text-[var(--text-secondary)]">
+        {legs.map(({ label, leg }) => {
+          const times = formatFlightTimes(leg);
+          const duration = formatDuration(leg.durationMin);
+          const stops = formatStops(leg.stops);
+          const checkedLabel = formatRelativeChecked(
+            leg.checkedAt ?? lastCheckedAt,
+          );
+          const detailParts = [
+            times,
+            duration,
+            stops,
+            leg.flightNo,
+            leg.aircraft,
+          ].filter(Boolean);
+
+          return (
+            <li
+              key={label}
+              className="glass-subtle rounded-xl px-3.5 py-2.5 grid gap-1"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="flex flex-wrap items-center gap-1.5">
+                  <strong className="font-semibold text-[var(--text-primary)]">
+                    {label}
+                  </strong>{" "}
+                  <span className="tabular-nums font-medium">
+                    {format(leg.price)}
+                  </span>{" "}
+                  <span>
+                    via {sourceLabel(leg.source)}
+                    {leg.airline ? `, ${leg.airline}` : ""}
+                  </span>
+                  {leg.estimate && (
+                    <span
+                      title={ESTIMATE_TOOLTIP}
+                      aria-description={ESTIMATE_TOOLTIP}
+                      className="inline-flex items-center rounded-full border border-[var(--delta-amber-border)] bg-[var(--delta-amber-bg)] px-2 py-0.5 text-[10px] font-semibold text-[var(--delta-amber-text)]"
+                    >
+                      Estimate
+                    </span>
+                  )}
+                </span>
+                <span className="text-[11px] text-[var(--text-muted)] shrink-0">
+                  {fmtDate(leg.date)}
+                </span>
+              </div>
+
+              {(detailParts.length > 0 || checkedLabel) && (
+                <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-[var(--text-muted)]">
+                  {detailParts.length > 0 ? (
+                    <span className="tabular-nums text-[var(--text-secondary)]">
+                      {detailParts.join(" · ")}
+                    </span>
+                  ) : (
+                    <span />
+                  )}
+                  {checkedLabel && <span>{checkedLabel}</span>}
+                </div>
+              )}
+            </li>
+          );
+        })}
       </ul>
 
       {/* Compare on other sites */}
@@ -109,7 +171,7 @@ export default function BookingPanel({
                 href={link(s)}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="glass-subtle-interactive focus-ring flex items-center justify-between gap-2 rounded-xl px-3.5 py-2.5 text-sm font-medium text-[var(--text-primary)]"
+                className="glass-subtle-interactive focus-ring flex min-h-[44px] items-center justify-between gap-2 rounded-xl px-3.5 py-2.5 text-sm font-medium text-[var(--text-primary)]"
               >
                 <span>{s.label}</span>
                 <span className="inline-flex items-center gap-1.5 text-xs text-[var(--text-muted)]">

@@ -29,6 +29,9 @@ export function parseDeepLinkQuery(search: string): Query | null {
   const trip = sp.get("trip") ?? "round";
   if (trip !== "round" && trip !== "oneway") return null;
 
+  const cabin = sp.get("cabin") ?? "economy";
+  if (cabin !== "economy" && cabin !== "business") return null;
+
   const rawMin = sp.get("minGap");
   const rawMax = sp.get("maxGap");
 
@@ -42,6 +45,7 @@ export function parseDeepLinkQuery(search: string): Query | null {
       trip: "oneway",
       minGap: 0,
       maxGap: 0,
+      cabin,
     };
   }
 
@@ -67,6 +71,7 @@ export function parseDeepLinkQuery(search: string): Query | null {
     trip: "round",
     minGap,
     maxGap,
+    cabin,
   };
 }
 

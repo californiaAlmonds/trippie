@@ -1,5 +1,7 @@
 import type { TripMode } from "@/lib/search";
 
+import type { Cabin } from "@/lib/types";
+
 export interface AccountUser {
   id: string | number;
   email: string;
@@ -14,9 +16,11 @@ export interface Plan {
   trip: TripMode;
   minGap: number;
   maxGap: number;
+  cabin?: Cabin;
   alertEnabled: boolean;
   targetPrice: number | null;
   lastAlertPrice: number | null;
+  lastSeenPrice?: number | null;
   expired: boolean;
   createdAt: string | number;
 }
@@ -29,7 +33,7 @@ export interface ApiResult<T = unknown> {
 }
 
 export interface ApiRequestOptions {
-  method?: "GET" | "POST" | "PATCH" | "DELETE";
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   body?: unknown;
   signal?: AbortSignal;
 }

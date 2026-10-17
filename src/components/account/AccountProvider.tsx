@@ -11,6 +11,7 @@ import {
   useState,
 } from "react";
 import type { TripMode } from "@/lib/search";
+import type { Cabin } from "@/lib/types";
 import type { Query } from "../recentStore";
 import {
   type AccountUser,
@@ -30,6 +31,7 @@ export interface CreatePlanInput {
   trip: TripMode;
   minGap?: number;
   maxGap?: number;
+  cabin?: Cabin;
   alertEnabled?: boolean;
   targetPrice?: number | null;
 }
@@ -312,11 +314,13 @@ export function AccountProvider({
 
   const createPlan = useCallback(
     async (input: CreatePlanInput): Promise<ApiResult<{ plan: Plan }>> => {
+      const cabin: Cabin = input.cabin === "business" ? "business" : "economy";
       const payload: Record<string, unknown> = {
         origin: input.origin,
         destination: input.destination,
         month: input.month,
         trip: input.trip,
+        cabin,
         alertEnabled: Boolean(input.alertEnabled),
         targetPrice: input.targetPrice ?? null,
       };
@@ -331,7 +335,10 @@ export function AccountProvider({
       });
 
       if (res.ok && res.data?.plan) {
-        const created = res.data.plan;
+        const created = {
+          ...res.data.plan,
+          cabin: res.data.plan.cabin ?? cabin,
+        };
         setPlans((prev) => [
           created,
           ...prev.filter((p) => String(p.id) !== String(created.id)),
@@ -339,7 +346,7 @@ export function AccountProvider({
         if (created.alertEnabled) {
           promptOnceForPush();
         }
-        return res;
+        return { ...res, data: { plan: created } };
       }
 
       if (isEndpointUnavailable(res)) {
@@ -352,9 +359,11 @@ export function AccountProvider({
           trip: input.trip,
           minGap: input.trip === "round" ? (input.minGap ?? 5) : 0,
           maxGap: input.trip === "round" ? (input.maxGap ?? 7) : 0,
+          cabin,
           alertEnabled: Boolean(input.alertEnabled && user?.verified),
           targetPrice: input.targetPrice ?? null,
           lastAlertPrice: null,
+          lastSeenPrice: null,
           expired: input.month < currentMonth,
           createdAt: new Date().toISOString(),
         };

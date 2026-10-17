@@ -67,7 +67,7 @@ export default function AccountSlot() {
       <button
         type="button"
         onClick={() => openAuthDialog({ tab: "signin" })}
-        className="glass-field focus-ring inline-flex min-h-[38px] items-center gap-1.5 rounded-full px-4 py-1.5 text-xs sm:text-sm font-semibold text-[var(--text-primary)] cursor-pointer"
+        className="glass-field focus-ring inline-flex min-h-[44px] items-center gap-1.5 rounded-full px-4 py-1.5 text-xs sm:text-sm font-semibold text-[var(--text-primary)] cursor-pointer"
       >
         <UserIcon className="h-4 w-4 text-[var(--accent)]" />
         <span>Sign in</span>
@@ -88,7 +88,7 @@ export default function AccountSlot() {
         aria-haspopup="menu"
         aria-expanded={menuOpen}
         aria-label={`Account menu (${user.email})`}
-        className="glass-field focus-ring inline-flex items-center gap-2 rounded-full p-1 pr-3 text-xs font-medium text-[var(--text-primary)] cursor-pointer"
+        className="glass-field focus-ring inline-flex min-h-[44px] items-center gap-2 rounded-full p-1.5 pr-3 text-xs font-medium text-[var(--text-primary)] cursor-pointer"
       >
         <span
           aria-hidden="true"

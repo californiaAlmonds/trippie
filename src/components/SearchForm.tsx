@@ -1,10 +1,12 @@
-import { AIRPORTS } from "@/lib/airports";
 import type { TripMode } from "@/lib/search";
+import type { Cabin } from "@/lib/types";
+import AirportPicker from "./AirportPicker";
 import { SpinnerIcon, SwapIcon } from "./icons";
 import SegmentedControl from "./SegmentedControl";
 
 interface SearchFormProps {
   trip: TripMode;
+  cabin: Cabin;
   origin: string;
   destination: string;
   month: string;
@@ -12,6 +14,7 @@ interface SearchFormProps {
   maxGap: number;
   loading: boolean;
   onTripChange: (trip: TripMode) => void;
+  onCabinChange: (cabin: Cabin) => void;
   onOriginChange: (origin: string) => void;
   onDestinationChange: (destination: string) => void;
   onSwapAirports: () => void;
@@ -26,11 +29,17 @@ const TRIP_OPTIONS = [
   { value: "oneway", label: "One way" },
 ] as const;
 
+const CABIN_OPTIONS = [
+  { value: "economy", label: "Economy" },
+  { value: "business", label: "Business" },
+] as const;
+
 const pillInputClass =
   "glass-field min-h-[44px] w-full rounded-2xl px-3.5 py-2 text-sm font-medium text-[var(--text-primary)]";
 
 export default function SearchForm({
   trip,
+  cabin,
   origin,
   destination,
   month,
@@ -38,6 +47,7 @@ export default function SearchForm({
   maxGap,
   loading,
   onTripChange,
+  onCabinChange,
   onOriginChange,
   onDestinationChange,
   onSwapAirports,
@@ -49,7 +59,7 @@ export default function SearchForm({
   return (
     <section aria-label="Search flights" className="glass-strong p-4 sm:p-6">
       <form onSubmit={onSubmit} className="grid gap-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-3 sm:gap-4">
           <div className="grid gap-1">
             <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
               Trip
@@ -61,52 +71,46 @@ export default function SearchForm({
               onChange={onTripChange}
             />
           </div>
+
+          <div className="grid gap-1">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+              Cabin
+            </span>
+            <SegmentedControl
+              ariaLabel="Cabin class"
+              options={CABIN_OPTIONS}
+              value={cabin}
+              onChange={onCabinChange}
+            />
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto_1fr] sm:items-start">
+          <AirportPicker
+            label="From"
+            value={origin}
+            onChange={onOriginChange}
+          />
+
+          <button
+            type="button"
+            onClick={onSwapAirports}
+            aria-label="Swap origin and destination"
+            title="Swap origin and destination"
+            className="glass-field focus-ring inline-flex min-h-[44px] h-[44px] w-[44px] shrink-0 items-center justify-center justify-self-center sm:mt-[22px] rounded-2xl text-[var(--text-secondary)] hover:text-[var(--text-primary)] active:scale-95 transition-transform cursor-pointer"
+          >
+            <SwapIcon className="h-4 w-4 rotate-90 sm:rotate-0" />
+          </button>
+
+          <AirportPicker
+            label="To"
+            value={destination}
+            onChange={onDestinationChange}
+          />
         </div>
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:flex lg:flex-wrap lg:items-end">
-          <div className="grid grid-cols-1 gap-2 sm:col-span-2 sm:grid-cols-[1fr_auto_1fr] sm:items-end lg:flex-1 lg:min-w-[320px]">
-            <label className="grid w-full min-w-0 gap-1.5 text-xs font-medium text-[var(--text-secondary)]">
-              <span className="tracking-wide">From</span>
-              <select
-                className={pillInputClass}
-                value={origin}
-                onChange={(e) => onOriginChange(e.target.value)}
-              >
-                {AIRPORTS.map((a) => (
-                  <option key={a.code} value={a.code}>
-                    {a.name} ({a.code})
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <button
-              type="button"
-              onClick={onSwapAirports}
-              aria-label="Swap origin and destination"
-              title="Swap origin and destination"
-              className="glass-field focus-ring inline-flex min-h-[44px] h-[44px] w-[44px] shrink-0 items-center justify-center justify-self-center rounded-2xl text-[var(--text-secondary)] hover:text-[var(--text-primary)] active:scale-95 transition-transform cursor-pointer"
-            >
-              <SwapIcon className="h-4 w-4 rotate-90 sm:rotate-0" />
-            </button>
-
-            <label className="grid w-full min-w-0 gap-1.5 text-xs font-medium text-[var(--text-secondary)]">
-              <span className="tracking-wide">To</span>
-              <select
-                className={pillInputClass}
-                value={destination}
-                onChange={(e) => onDestinationChange(e.target.value)}
-              >
-                {AIRPORTS.map((a) => (
-                  <option key={a.code} value={a.code}>
-                    {a.name} ({a.code})
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-
-          <label className="grid w-full gap-1.5 text-xs font-medium text-[var(--text-secondary)] lg:w-44">
+          <label className="grid w-full gap-1.5 text-xs font-medium text-[var(--text-secondary)] lg:w-48">
             <span className="tracking-wide">Month</span>
             <input
               type="month"
@@ -118,7 +122,7 @@ export default function SearchForm({
           </label>
 
           {trip === "round" && (
-            <div className="grid grid-cols-2 gap-2.5 sm:col-span-1 lg:w-44">
+            <div className="grid grid-cols-2 gap-2.5 sm:col-span-1 lg:w-48">
               <label className="grid gap-1.5 text-xs font-medium text-[var(--text-secondary)]">
                 <span className="tracking-wide">Stay (days) min</span>
                 <input
