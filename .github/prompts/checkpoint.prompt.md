@@ -8,7 +8,7 @@ Write a checkpoint of the current work to `/memories/repo/progress.md` with the 
 # Progress — <task name> (<YYYY-MM-DD>)
 GOAL: <one line>
 DONE: <bullets: what changed, with file paths>
-DECISIONS: <bullets: choices made + one-line why (include Advisor verdicts)>
+DECISIONS: <bullets: choices made + one-line why (include review verdicts)>
 NEXT: <ordered bullets: exact next steps>
 OPEN: <bullets: unresolved questions, failing tests, known bugs>
 VERIFY: <commands/URLs that prove it works>
