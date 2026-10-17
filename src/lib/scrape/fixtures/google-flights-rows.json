@@ -1,0 +1,30 @@
+{
+  "economy_one_stop": {
+    "route": "CCU-BLR",
+    "date": "2026-11-15",
+    "cabin": "economy",
+    "collapsed": "5:50 PM\n\u00a0–\u00a0\n11:15 PM\nIndiGo\n5 hr 25 min\nCCU–BLR\n1 stop\n1 hr 40 min PAT\n164 kg CO2e\n+52% emissions\n₹13,350",
+    "expanded": "Departure\nSun, Nov 15\n164 kg CO2e\n+52% emissions\nSelect flight\n₹13,350\n5:50 PMNetaji Subhash Chandra Bose International Airport\u00a0(CCU)\nTravel time: 1 hr 10 min\n7:00 PMJay Prakash Narayan International Airport\u00a0(PAT)\nIndiGoEconomyAirbus A320neo6E\u00a0895\nBelow average legroom (28 in)\nEmissions estimate: 50 kg CO2e\nContrail warming potential: Low\n1 hr 40 min layoverPatna\u00a0(PAT)\n8:40 PMJay Prakash Narayan International Airport\u00a0(PAT)\nTravel time: 2 hr 35 min\n11:15 PMKempegowda International Airport Bengaluru\u00a0(BLR)\nIndiGoEconomyAirbus A320neo6E\u00a06452\nBelow average legroom (28 in)\nEmissions estimate: 114 kg CO2e\nContrail warming potential: Medium"
+  },
+  "economy_nonstop": {
+    "route": "CCU-BLR",
+    "date": "2026-11-15",
+    "cabin": "economy",
+    "collapsed": "6:25 PM\n\u00a0–\u00a0\n9:15 PM\nAkasa Air\n2 hr 50 min\nCCU–BLR\nNonstop\n107 kg CO2e\nAvg emissions\n₹14,377",
+    "expanded": "Departure\nSun, Nov 15\n107 kg CO2e\nAvg emissions\nSelect flight\n₹14,377\n6:25 PMNetaji Subhash Chandra Bose International Airport\u00a0(CCU)\nTravel time: 2 hr 50 min\n9:15 PMKempegowda International Airport Bengaluru\u00a0(BLR)\nAkasa AirEconomyBoeing 737MAX 8 PassengerQP\u00a01265\nBelow average legroom (28 in)\nIn-seat USB outlet\nEmissions estimate: 107 kg CO2e\nContrail warming potential: Medium"
+  },
+  "economy_next_day_arrival": {
+    "route": "BLR-IXZ",
+    "date": "2026-11-15",
+    "cabin": "economy",
+    "collapsed": "10:40 PM\n\u00a0–\u00a0\n6:50 AM+1\nIndiGo\n8 hr 10 min\nBLR–IXZ\n1 stop\n4 hr 55 min MAA\n128 kg CO2e\n+16% emissions\n₹13,766",
+    "expanded": "Departure\nSun, Nov 15\n128 kg CO2e\n+16% emissions\nSelect flight\n₹13,766\n10:40 PMKempegowda International Airport Bengaluru\u00a0(BLR)\nTravel time: 1 hr 5 min\n11:45 PMChennai International Airport\u00a0(MAA)\nIndiGoEconomyAirbus A321neo6E\u00a06174\nBelow average legroom (28 in)\nEmissions estimate: 34 kg CO2e\nContrail warming potential: Low\n4 hr 55 min layoverChennai\u00a0(MAA)\n4:40 AM+1Chennai International Airport\u00a0(MAA)\nTravel time: 2 hr 10 minOvernight\n6:50 AM+1Veer Savarkar International Airport\u00a0(IXZ)\nIndiGoEconomyAirbus A321neo6E\u00a0526\nBelow average legroom (28 in)\nEmissions estimate: 94 kg CO2e\nContrail warming potential: Low"
+  },
+  "business_one_stop": {
+    "route": "CCU-BLR",
+    "date": "2026-11-15",
+    "cabin": "business",
+    "collapsed": "1:45 AM\n\u00a0–\u00a0\n7:50 AM\nIndiGo\n6 hr 5 min\nCCU–BLR\n1 stop\n1 hr 15 min BOM\n274 kg CO2e\n+69% emissions\n₹45,449",
+    "expanded": "Departure\nSun, Nov 15\n274 kg CO2e\n+69% emissions\nSelect flight\n₹45,449\n1:45 AMNetaji Subhash Chandra Bose International Airport\u00a0(CCU)\nTravel time: 3 hrOvernight\n4:45 AMChhatrapati Shivaji Maharaj International Airport Mumbai\u00a0(BOM)\nIndiGoBusiness ClassAirbus A321neo6E\u00a05243\nStandard recliner seat\nIn-seat power & USB outlets\nEmissions estimate: 171 kg CO2e\nContrail warming potential: Low\n1 hr 15 min layoverMumbai\u00a0(BOM)\n6:00 AMChhatrapati Shivaji Maharaj International Airport Mumbai\u00a0(BOM)\nTravel time: 1 hr 50 min\n7:50 AMKempegowda International Airport Bengaluru\u00a0(BLR)\nIndiGoBusiness ClassAirbus A321neo6E\u00a05296\nStandard recliner seat\nIn-seat power & USB outlets\nEmissions estimate: 103 kg CO2e\nContrail warming potential: Low"
+  }
+}

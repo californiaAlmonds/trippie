@@ -1,8 +1,10 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { type Client, createClient, type InStatement, type ResultSet, type TransactionMode } from "@libsql/client";
 import { migrate } from "./migrations.ts";
-import type { Cabin, DayFare } from "./types.ts";
+import type { Cabin, DayFare, PriceStats, RouteFreshness } from "./types.ts";
 import { addDays, computeWindows, monthBounds } from "./windows.ts";
+
+export type { PriceStats, RouteFreshness } from "./types.ts";
 
 export type FareStatus = "ok" | "no_flights" | "blocked" | "parse_error";
 
@@ -11,10 +13,18 @@ export interface FareRecord {
   origin: string;
   destination: string;
   date: string; // travel date
+  cabin?: Cabin;
   price: number | null;
   airline?: string | null;
   stops?: number | null;
+  depTime?: string | null;
+  arrTime?: string | null;
+  arrDayOffset?: number | null;
+  durationMin?: number | null;
+  flightNo?: string | null;
+  aircraft?: string | null;
   status: FareStatus;
+  scrapedAt?: string;
 }
 
 let ready: Promise<unknown> | undefined;
@@ -93,20 +103,45 @@ export async function saveFares(records: FareRecord[], provider = "google-flight
   await (await db()).batch(
     records.map((r) => ({
       sql: `INSERT OR REPLACE INTO fares
-            (snapshot_day, origin, destination, travel_date, price, airline, stops, status, provider, scraped_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?)`,
-      args: [r.day, r.origin, r.destination, r.date, r.price, r.airline ?? null, r.stops ?? null, r.status, provider, now],
+            (snapshot_day, origin, destination, travel_date, cabin, price, airline, stops,
+             dep_time, arr_time, arr_day_offset, duration_min, flight_no, aircraft,
+             status, provider, scraped_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      args: [
+        r.day,
+        r.origin,
+        r.destination,
+        r.date,
+        r.cabin ?? "economy",
+        r.price,
+        r.airline ?? null,
+        r.stops ?? null,
+        r.depTime ?? null,
+        r.arrTime ?? null,
+        r.arrDayOffset ?? null,
+        r.durationMin ?? null,
+        r.flightNo ?? null,
+        r.aircraft ?? null,
+        r.status,
+        provider,
+        r.scrapedAt ?? now,
+      ],
     })),
     "write",
   );
 }
 
 /** Travel dates already scraped today, so a re-run resumes instead of repeating. */
-export async function doneDates(day: string, origin: string, destination: string): Promise<Set<string>> {
+export async function doneDates(
+  day: string,
+  origin: string,
+  destination: string,
+  cabin: Cabin = "economy",
+): Promise<Set<string>> {
   const rs = await (await db()).execute({
     sql: `SELECT travel_date FROM fares
-          WHERE snapshot_day = ? AND origin = ? AND destination = ? AND status IN ('ok','no_flights')`,
-    args: [day, origin, destination],
+          WHERE snapshot_day = ? AND origin = ? AND destination = ? AND cabin = ? AND status IN ('ok','no_flights')`,
+    args: [day, origin, destination, cabin],
   });
   return new Set(rs.rows.map((r) => String(r.travel_date)));
 }
@@ -126,6 +161,24 @@ export async function finishRun(id: number, ok: number, failed: number, note: st
   });
 }
 
+function rowToDayFare(r: Record<string, unknown>): DayFare {
+  const fare: DayFare = {
+    date: String(r.date),
+    price: Number(r.price),
+    source: "google",
+    airline: r.airline ? String(r.airline) : undefined,
+    stops: r.stops == null ? undefined : Number(r.stops),
+  };
+  if (r.dep_time != null) fare.depTime = String(r.dep_time);
+  if (r.arr_time != null) fare.arrTime = String(r.arr_time);
+  if (r.arr_day_offset != null && Number(r.arr_day_offset) > 0) fare.arrDayOffset = Number(r.arr_day_offset);
+  if (r.duration_min != null) fare.durationMin = Number(r.duration_min);
+  if (r.flight_no != null) fare.flightNo = String(r.flight_no);
+  if (r.aircraft != null) fare.aircraft = String(r.aircraft);
+  if (r.scraped_at != null) fare.checkedAt = String(r.scraped_at);
+  return fare;
+}
+
 /** Most recent successful fare per travel date. */
 export async function getLatestFares(
   origin: string,
@@ -135,7 +188,10 @@ export async function getLatestFares(
   cabin: Cabin = "economy",
 ): Promise<DayFare[]> {
   const rs = await (await db()).execute({
-    sql: `SELECT f.travel_date AS date, f.price, f.airline, f.stops FROM fares f
+    sql: `SELECT f.travel_date AS date, f.price, f.airline, f.stops,
+                 f.dep_time, f.arr_time, f.arr_day_offset, f.duration_min,
+                 f.flight_no, f.aircraft, f.scraped_at
+          FROM fares f
           WHERE f.origin = ? AND f.destination = ? AND f.cabin = ? AND f.travel_date BETWEEN ? AND ?
             AND f.status = 'ok' AND f.price IS NOT NULL
             AND f.snapshot_day = (SELECT MAX(snapshot_day) FROM fares
@@ -144,13 +200,7 @@ export async function getLatestFares(
           ORDER BY f.travel_date`,
     args: [origin, destination, cabin, from, to],
   });
-  return rs.rows.map((r) => ({
-    date: String(r.date),
-    price: Number(r.price),
-    source: "google",
-    airline: r.airline ? String(r.airline) : undefined,
-    stops: r.stops == null ? undefined : Number(r.stops),
-  }));
+  return rs.rows.map((r) => rowToDayFare(r as Record<string, unknown>));
 }
 
 /** Most recent status='ok' fare per travel date, included only if its snapshot_day >= minSnapshotDay. */
@@ -163,7 +213,10 @@ export async function getFreshFares(
   cabin: Cabin = "economy",
 ): Promise<DayFare[]> {
   const rs = await (await db()).execute({
-    sql: `SELECT f.travel_date AS date, f.price, f.airline, f.stops FROM fares f
+    sql: `SELECT f.travel_date AS date, f.price, f.airline, f.stops,
+                 f.dep_time, f.arr_time, f.arr_day_offset, f.duration_min,
+                 f.flight_no, f.aircraft, f.scraped_at
+          FROM fares f
           WHERE f.origin = ? AND f.destination = ? AND f.cabin = ? AND f.travel_date BETWEEN ? AND ?
             AND f.status = 'ok' AND f.price IS NOT NULL
             AND f.snapshot_day >= ?
@@ -173,13 +226,7 @@ export async function getFreshFares(
           ORDER BY f.travel_date`,
     args: [origin, destination, cabin, from, to, minSnapshotDay],
   });
-  return rs.rows.map((r) => ({
-    date: String(r.date),
-    price: Number(r.price),
-    source: "google",
-    airline: r.airline ? String(r.airline) : undefined,
-    stops: r.stops == null ? undefined : Number(r.stops),
-  }));
+  return rs.rows.map((r) => rowToDayFare(r as Record<string, unknown>));
 }
 
 export interface HistoryPoint {
@@ -188,15 +235,21 @@ export interface HistoryPoint {
 }
 
 /** Price over time of one specific depart/return pair. */
-export async function getWindowHistory(origin: string, destination: string, depart: string, ret: string): Promise<HistoryPoint[]> {
+export async function getWindowHistory(
+  origin: string,
+  destination: string,
+  depart: string,
+  ret: string,
+  cabin: Cabin = "economy",
+): Promise<HistoryPoint[]> {
   const rs = await (await db()).execute({
     sql: `SELECT o.snapshot_day AS day, o.price + i.price AS total
           FROM fares o JOIN fares i
             ON i.snapshot_day = o.snapshot_day AND i.origin = o.destination AND i.destination = o.origin
-           AND i.travel_date = ? AND i.status = 'ok'
-          WHERE o.origin = ? AND o.destination = ? AND o.travel_date = ? AND o.status = 'ok'
+           AND i.cabin = o.cabin AND i.travel_date = ? AND i.status = 'ok'
+          WHERE o.origin = ? AND o.destination = ? AND o.cabin = ? AND o.travel_date = ? AND o.status = 'ok'
           ORDER BY o.snapshot_day`,
-    args: [ret, origin, destination, depart],
+    args: [ret, origin, destination, cabin, depart],
   });
   return rs.rows.map((r) => ({ day: String(r.day), total: Number(r.total) }));
 }
@@ -208,14 +261,15 @@ export async function getBestWindowHistory(
   month: string,
   minGap: number,
   maxGap: number,
+  cabin: Cabin = "economy",
 ): Promise<HistoryPoint[]> {
   const { first, last } = monthBounds(month);
   const database = await db();
   const load = async (o: string, d: string, from: string, to: string) => {
     const rs = await database.execute({
       sql: `SELECT snapshot_day, travel_date AS date, price FROM fares
-            WHERE origin = ? AND destination = ? AND travel_date BETWEEN ? AND ? AND status = 'ok'`,
-      args: [o, d, from, to],
+            WHERE origin = ? AND destination = ? AND cabin = ? AND travel_date BETWEEN ? AND ? AND status = 'ok' AND price IS NOT NULL`,
+      args: [o, d, cabin, from, to],
     });
     const byDay = new Map<string, DayFare[]>();
     for (const r of rs.rows) {
@@ -233,3 +287,151 @@ export async function getBestWindowHistory(
   }
   return points;
 }
+
+function quantile(sorted: number[], q: number): number {
+  const pos = (sorted.length - 1) * q;
+  const base = Math.floor(pos);
+  const rest = pos - base;
+  const next = sorted[base + 1] ?? sorted[base];
+  return Math.round(sorted[base] + rest * (next - sorted[base]));
+}
+
+export function computePriceStats(samples: { day: string; price: number }[]): PriceStats | null {
+  if (samples.length === 0) return null;
+  const prices = samples.map((s) => s.price).sort((a, b) => a - b);
+  let since = samples[0].day;
+  for (const s of samples) {
+    if (s.day < since) since = s.day;
+  }
+  return {
+    min: prices[0],
+    max: prices[prices.length - 1],
+    p25: quantile(prices, 0.25),
+    median: quantile(prices, 0.5),
+    samples: prices.length,
+    since,
+  };
+}
+
+/** Price distribution across all status='ok' scraped fares in [from, to] for a route+cabin. */
+export async function getRouteStats(
+  origin: string,
+  destination: string,
+  from: string,
+  to: string,
+  cabin: Cabin = "economy",
+): Promise<PriceStats | null> {
+  const rs = await (await db()).execute({
+    sql: `SELECT snapshot_day AS day, price FROM fares
+          WHERE origin = ? AND destination = ? AND cabin = ? AND travel_date BETWEEN ? AND ?
+            AND status = 'ok' AND price IS NOT NULL`,
+    args: [origin, destination, cabin, from, to],
+  });
+  return computePriceStats(rs.rows.map((r) => ({ day: String(r.day), price: Number(r.price) })));
+}
+
+/** Price distribution over snapshot days of the best round-trip window total that day. */
+export async function getBestWindowStats(
+  origin: string,
+  destination: string,
+  month: string,
+  minGap: number,
+  maxGap: number,
+  cabin: Cabin = "economy",
+): Promise<PriceStats | null> {
+  const points = await getBestWindowHistory(origin, destination, month, minGap, maxGap, cabin);
+  return computePriceStats(points.map((p) => ({ day: p.day, price: p.total })));
+}
+
+export interface FreshnessRouteParams {
+  origin: string;
+  destination: string;
+  month: string;
+  trip: "round" | "oneway";
+  minGap: number;
+  maxGap: number;
+  cabin: Cabin;
+}
+
+const COLLECTING_WINDOW_MS = 30 * 60 * 1000;
+
+/** Returns lastCheckedAt (newest scraped_at for this route+cabin+range), tracked, and collecting flags. */
+export async function getFreshness(
+  routeOrOrigin: FreshnessRouteParams | string,
+  destinationOrNow?: string | number | Date,
+  month?: string,
+  trip: "round" | "oneway" = "round",
+  minGap = 0,
+  maxGap = 0,
+  cabin: Cabin = "economy",
+  nowArg?: number | Date,
+): Promise<RouteFreshness> {
+  let p: FreshnessRouteParams;
+  let nowMs: number;
+  if (typeof routeOrOrigin === "object") {
+    p = routeOrOrigin;
+    nowMs =
+      destinationOrNow instanceof Date
+        ? destinationOrNow.getTime()
+        : typeof destinationOrNow === "number"
+          ? destinationOrNow
+          : Date.now();
+  } else {
+    p = {
+      origin: routeOrOrigin,
+      destination: String(destinationOrNow ?? ""),
+      month: String(month ?? ""),
+      trip,
+      minGap,
+      maxGap,
+      cabin,
+    };
+    nowMs = nowArg instanceof Date ? nowArg.getTime() : typeof nowArg === "number" ? nowArg : Date.now();
+  }
+
+  const { first, last } = monthBounds(p.month);
+  const database = await db();
+  const inFrom = addDays(first, p.minGap);
+  const inTo = addDays(last, p.maxGap);
+
+  const [fareRs, trackRs] = await Promise.all([
+    database.execute({
+      sql: `SELECT MAX(scraped_at) AS newest FROM fares
+            WHERE cabin = ? AND status = 'ok' AND price IS NOT NULL
+              AND ((origin = ? AND destination = ? AND travel_date BETWEEN ? AND ?)
+                OR (? = 'round' AND origin = ? AND destination = ? AND travel_date BETWEEN ? AND ?))`,
+      args: [p.cabin, p.origin, p.destination, first, last, p.trip, p.destination, p.origin, inFrom, inTo],
+    }),
+    database.execute({
+      sql: `SELECT last_dispatched_at, last_scraped_at FROM tracked_routes
+            WHERE origin = ? AND destination = ? AND month = ? AND trip = ?
+              AND min_gap = ? AND max_gap = ? AND cabin = ?`,
+      args: [p.origin, p.destination, p.month, p.trip, p.minGap, p.maxGap, p.cabin],
+    }),
+  ]);
+
+  const newest = fareRs.rows[0]?.newest;
+  const lastCheckedAt = newest != null ? String(newest) : null;
+  const tr = trackRs.rows[0];
+  const tracked = Boolean(tr);
+  let collecting = false;
+  if (tr && tr.last_dispatched_at != null) {
+    const dispIso = String(tr.last_dispatched_at);
+    const dispMs = Date.parse(dispIso);
+    const scrapedIso = tr.last_scraped_at != null ? String(tr.last_scraped_at) : null;
+    if (
+      Number.isFinite(dispMs) &&
+      nowMs - dispMs <= COLLECTING_WINDOW_MS &&
+      (scrapedIso === null || scrapedIso < dispIso)
+    ) {
+      collecting = true;
+    }
+  }
+
+  return {
+    lastCheckedAt,
+    tracked,
+    collecting,
+  };
+}
+

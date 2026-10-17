@@ -8,11 +8,12 @@ interface GroupedPrice {
 }
 
 // Cached user-search prices (~48h old); India/INR coverage for niche routes is unverified.
-export function travelpayoutsProvider(token: string): FareProvider {
+export function travelpayoutsProvider(token: string, fetchFn: typeof fetch = fetch): FareProvider {
   return {
     name: "Travelpayouts (Aviasales cache)",
     isDemo: false,
-    async getOneWayFares(origin, destination, from, to) {
+    async getOneWayFares(origin, destination, from, to, cabin = "economy") {
+      if (cabin !== "economy") return [];
       const months = new Set<string>();
       for (const d of [from, to]) months.add(d.slice(0, 7));
       const byDate = new Map<string, DayFare>();
@@ -26,7 +27,7 @@ export function travelpayoutsProvider(token: string): FareProvider {
           currency: "inr",
           market: "in",
         }).toString();
-        const res = await fetch(url, {
+        const res = await fetchFn(url, {
           headers: { "X-Access-Token": token, "Accept-Encoding": "gzip, deflate" },
           signal: AbortSignal.timeout(15_000),
           cache: "no-store",
@@ -36,10 +37,18 @@ export function travelpayoutsProvider(token: string): FareProvider {
         if (!body.success) throw new Error("Travelpayouts request failed");
         for (const [date, f] of Object.entries(body.data ?? {})) {
           if (date < from || date > to) continue;
-          byDate.set(date, { date, price: f.price, source: "aviasales", airline: f.airline, stops: f.transfers });
+          byDate.set(date, {
+            date,
+            price: f.price,
+            source: "aviasales",
+            airline: f.airline,
+            stops: f.transfers,
+            estimate: true,
+          });
         }
       }
       return [...byDate.values()];
     },
   };
 }
+
